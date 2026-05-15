@@ -1,0 +1,65 @@
+---
+title: "QuackIR: Reproducible IR Research in Relational DBs"
+description: "Learn what QuackIR is, why it uses relational databases for information retrieval, and which backends and retrieval methods are supported."
+---
+
+QuackIR is a Python toolkit for reproducible information retrieval (IR) research built on relational database management systems. Instead of requiring a standalone search engine or vector store, QuackIR runs sparse BM25 retrieval, dense vector search, and hybrid retrieval directly inside DuckDB, SQLite, or PostgreSQL.
+
+## What is information retrieval?
+
+Information retrieval is the task of ranking a collection of documents by relevance to a query. Modern IR systems typically rely on one of three approaches:
+
+- **Sparse retrieval** — term-based ranking with BM25. Fast and interpretable, it scores documents by exact lexical overlap between query and document terms.
+- **Dense retrieval** — embedding-based ranking with cosine similarity. Documents and queries are encoded into dense vectors and retrieved by nearest-neighbor search.
+- **Hybrid retrieval** — a combination of sparse and dense results fused together, typically using Reciprocal Rank Fusion (RRF).
+
+## Why relational databases for IR?
+
+Most IR toolkits require specialized infrastructure: Lucene for sparse retrieval, Faiss for dense vector search, or purpose-built vector databases. QuackIR demonstrates that a modern analytical RDBMS can serve all three workloads with competitive effectiveness, while offering:
+
+- **Reproducibility** — a single `.db` file captures the entire index state, making experiments fully portable.
+- **No extra infrastructure** — DuckDB and SQLite require no server setup. The database lives in a local file.
+- **SQL introspection** — you can query, inspect, and audit indexed data directly with SQL.
+- **Unified interface** — the same Python API works across DuckDB, SQLite, and PostgreSQL.
+
+## Supported databases
+
+| Feature | DuckDB | SQLite | PostgreSQL |
+|---|---|---|---|
+| Sparse (BM25) | Yes | Yes | Yes |
+| Dense (vector) | Yes | No | Yes |
+| Hybrid (RRF) | Yes | No | Yes |
+
+<Tip>
+  DuckDB requires no server setup and is the recommended starting point. It supports all three retrieval methods and runs entirely in-process.
+</Tip>
+
+## Supported index and search types
+
+QuackIR exposes two index types and three search types as Python enums:
+
+**Index types** (`IndexType`):
+- `IndexType.SPARSE` — stores tokenized document contents for full-text search.
+- `IndexType.DENSE` — stores pre-encoded document embeddings for vector search.
+
+**Search types** (`SearchType`):
+- `SearchType.SPARSE` — BM25 full-text search.
+- `SearchType.DENSE` — cosine similarity vector search.
+- `SearchType.HYBRID` — Reciprocal Rank Fusion over sparse and dense results.
+
+## Key features
+
+- **Sparse BM25 retrieval** using DuckDB FTS, SQLite FTS5, and PostgreSQL GIN indexes — with text tokenized via Pyserini's default Lucene analyzer (lowercasing, stopword removal, Porter stemming).
+- **Dense vector retrieval** using cosine similarity over pre-encoded embeddings stored as fixed-size arrays.
+- **Hybrid retrieval via RRF** that fuses BM25 and embedding rankings without requiring score normalization.
+- **CLI interface** for batch indexing and search, compatible with standard TREC run-file output.
+- **BEIR benchmark reproduction** scripts for evaluating retrieval effectiveness across 18 datasets.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install QuackIR and its dependencies using conda and pip.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Index a corpus and run your first retrieval query in minutes.
+  </Card>
+</CardGroup>

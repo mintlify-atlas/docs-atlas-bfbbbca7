@@ -1,133 +1,98 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "QuackIR: IR Toolkit Built on Relational Databases"
+description: "QuackIR is a Python toolkit for reproducible information retrieval research using DuckDB, SQLite, and PostgreSQL for sparse, dense, and hybrid retrieval."
 ---
 
-## Setting up
+QuackIR is a Python toolkit for reproducible information retrieval (IR) research built on top of relational database management systems. It supports sparse BM25 retrieval, dense vector search, and hybrid retrieval via Reciprocal Rank Fusion — all without requiring a dedicated search engine or vector database.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Set up QuackIR with conda and install all dependencies including DuckDB, PostgreSQL, and Pyserini.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Index a corpus and run your first sparse or dense retrieval query in minutes.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Guides" icon="book" href="/guides/indexing">
+    Learn how to index, search, and analyze text across DuckDB, SQLite, and PostgreSQL.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the full Python API for indexers, searchers, and analysis utilities.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is QuackIR?
 
-Everything you need to create world-class documentation.
+QuackIR demonstrates that relational database management systems (RDBMSes) like DuckDB can perform information retrieval with effectiveness comparable to established IR toolkits such as Lucene and Faiss. It is designed for researchers who want reproducible IR experiments and for practitioners who want to add retrieval capabilities to an existing relational database infrastructure.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={3}>
+  <Card title="Sparse Retrieval" icon="magnifying-glass">
+    BM25 full-text search using DuckDB FTS, SQLite FTS5, or PostgreSQL GIN indexes.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Dense Retrieval" icon="vector-square">
+    Cosine similarity vector search with pre-encoded embeddings in DuckDB or PostgreSQL.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Hybrid Retrieval" icon="shuffle">
+    Reciprocal Rank Fusion combining sparse and dense results in DuckDB or PostgreSQL.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+</CardGroup>
 
-## Make your content agent ready
+## Getting started
 
-Make your docs work for humans and AI agents alike.
+<Steps>
+  <Step title="Install QuackIR">
+    Clone the repository and install all dependencies using conda and pip.
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+    ```bash
+    git clone https://github.com/castorini/quackir.git --recurse-submodules
+    conda create -n quackir python=3.10
+    conda activate quackir
+    pip install -r requirements.txt
+    ```
+  </Step>
+  <Step title="Index your corpus">
+    Load a JSONL corpus into DuckDB and build a full-text search index.
 
-## Need inspiration?
+    ```python
+    from quackir.index import DuckDBIndexer
+    from quackir import IndexType
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    indexer = DuckDBIndexer()
+    indexer.init_table("corpus", IndexType.SPARSE)
+    indexer.load_table("corpus", "corpus.jsonl")
+    indexer.fts_index("corpus")
+    indexer.close()
+    ```
+  </Step>
+  <Step title="Run your first search">
+    Query the index using BM25 sparse retrieval.
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+
+    searcher = DuckDBSearcher()
+    results = searcher.search(SearchType.SPARSE, query_string="your query here", table_names=["corpus"])
+    print(results)
+    searcher.close()
+    ```
+  </Step>
+  <Step title="Evaluate results">
+    Use Pyserini's trec_eval to measure retrieval effectiveness (nDCG, MAP, etc.).
+
+    ```bash
+    python -m pyserini.eval.trec_eval -c -m ndcg_cut.10 qrels.txt run.txt
+    ```
+  </Step>
+</Steps>
+
+## Supported databases
+
+| Feature | DuckDB | SQLite | PostgreSQL |
+|---|---|---|---|
+| Sparse (BM25) | Yes | Yes | Yes |
+| Dense (vector) | Yes | No | Yes |
+| Hybrid (RRF) | Yes | No | Yes |
+
+<Tip>
+  DuckDB requires no server setup and is the recommended starting point for most use cases. It is the fastest way to get running with QuackIR.
+</Tip>

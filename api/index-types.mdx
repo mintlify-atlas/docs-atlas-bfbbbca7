@@ -1,0 +1,80 @@
+---
+title: "IndexType and SearchDB enums"
+description: "Reference for IndexType (SPARSE, DENSE) and SearchDB (DUCKDB, SQLITE, POSTGRES) enums used to configure QuackIR indexers and searchers."
+---
+
+`IndexType` and `SearchDB` are the two configuration enums exported from the top-level `quackir` package. `IndexType` determines the schema and indexing strategy used when creating a table, while `SearchDB` identifies which database backend a workflow targets.
+
+```python
+from quackir import IndexType, SearchDB
+```
+
+## IndexType
+
+`IndexType` controls the column layout created by `init_table` and the insertion logic used by `load_jsonl_table` / `load_parquet_table`.
+
+| Member | Value | Description |
+|---|---|---|
+| `IndexType.SPARSE` | `'sparse'` | Creates an `(id, contents)` table and builds a BM25 full-text index. |
+| `IndexType.DENSE` | `'dense'` | Creates an `(id, embedding)` table suitable for cosine similarity search. |
+
+### Usage
+
+```python
+from quackir import IndexType
+from quackir.index import DuckDBIndexer
+
+indexer = DuckDBIndexer("my.db")
+
+# Sparse (BM25) table
+indexer.init_table("sparse_corpus", IndexType.SPARSE)
+
+# Dense (vector) table — default embedding dimension is 768
+indexer.init_table("dense_corpus", IndexType.DENSE, embedding_dim=1024)
+```
+
+<Note>
+SQLite only supports `IndexType.SPARSE`. Passing `IndexType.DENSE` to `SQLiteIndexer.init_table` raises a `ValueError`.
+</Note>
+
+### Detection
+
+All three indexers expose `get_index_type(table_name)` to auto-detect the type of an existing table by inspecting its column names:
+
+- A `contents` column → `IndexType.SPARSE`
+- An `embedding` column → `IndexType.DENSE`
+
+```python
+detected = indexer.get_index_type("corpus")
+print(detected)  # IndexType.SPARSE
+```
+
+## SearchDB
+
+`SearchDB` identifies the database engine. It is used by CLI tooling and environment variable loading helpers in `quackir._base` to select the appropriate indexer or searcher at runtime.
+
+| Member | Value | Description |
+|---|---|---|
+| `SearchDB.DUCKDB` | `'duckdb'` | DuckDB file-based database. Requires `db_path`. |
+| `SearchDB.SQLITE` | `'sqlite'` | SQLite file-based database. Requires `db_path`. |
+| `SearchDB.POSTGRES` | `'postgres'` | PostgreSQL server. Requires `db_name` and `db_user`. |
+
+### Usage
+
+```python
+from quackir import SearchDB
+
+db_type = SearchDB.DUCKDB
+print(db_type.value)  # 'duckdb'
+
+# Branching on backend
+if db_type == SearchDB.DUCKDB:
+    from quackir.index import DuckDBIndexer
+    indexer = DuckDBIndexer("duck.db")
+elif db_type == SearchDB.SQLITE:
+    from quackir.index import SQLiteIndexer
+    indexer = SQLiteIndexer("sqlite.db")
+elif db_type == SearchDB.POSTGRES:
+    from quackir.index import PostgresIndexer
+    indexer = PostgresIndexer(db_name="quackir", user="postgres")
+```

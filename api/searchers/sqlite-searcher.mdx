@@ -1,0 +1,181 @@
+---
+title: "SQLiteSearcher API reference"
+description: "Full API reference for SQLiteSearcher — run sparse BM25 retrieval against SQLite FTS5 virtual tables created by SQLiteIndexer. Dense and hybrid search are not supported."
+---
+
+`SQLiteSearcher` queries BM25 full-text indexes stored in SQLite FTS5 virtual tables created by `SQLiteIndexer`. It implements the abstract `Searcher` base class. Dense and hybrid retrieval are not supported.
+
+```python
+from quackir.search import SQLiteSearcher
+```
+
+<Warning>
+SQLiteSearcher only supports `SearchType.SPARSE`. `embedding_search` and `rrf_search` are not implemented and return `None`. Calling `search()` with `SearchType.DENSE` or `SearchType.HYBRID` will not return results.
+</Warning>
+
+## Constructor
+
+```python
+SQLiteSearcher(db_path="sqlite.db")
+```
+
+Opens a SQLite connection to the specified file.
+
+<ParamField path="db_path" type="string" default="sqlite.db">
+  Path to the SQLite database file produced by `SQLiteIndexer`.
+</ParamField>
+
+## Methods
+
+### search
+
+```python
+searcher.search(
+    method,
+    query_id=None,
+    query_string=None,
+    query_embedding=None,
+    top_n=5,
+    tokenize_query=True,
+    table_names=["corpus"],
+    rrf_k=60,
+)
+```
+
+Main entry point for retrieval. For SQLite, only `SearchType.SPARSE` produces results. Filters out `query_id` from the returned list when provided.
+
+<ParamField path="method" type="SearchType" required>
+  Should be `SearchType.SPARSE` for SQLiteSearcher.
+</ParamField>
+
+<ParamField path="query_id" type="string" default="None">
+  Document ID to exclude from results.
+</ParamField>
+
+<ParamField path="query_string" type="string" default="None">
+  Text query for sparse search. Required when `method` is `SPARSE`.
+</ParamField>
+
+<ParamField path="query_embedding" type="number[]" default="None">
+  Unused by SQLiteSearcher.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="tokenize_query" type="boolean" default="true">
+  When `True`, the `query_string` is tokenized with Pyserini's Lucene Analyzer before querying.
+</ParamField>
+
+<ParamField path="table_names" type="string[]" default='["corpus"]'>
+  List containing the name of the sparse table to search.
+</ParamField>
+
+<ParamField path="rrf_k" type="number" default="60">
+  Unused by SQLiteSearcher.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(doc_id, score)` tuples ordered by descending BM25 score.
+</ResponseField>
+
+---
+
+### fts_search
+
+```python
+searcher.fts_search(query_string, top_n=5, table_name="corpus")
+```
+
+Executes a BM25 search against the `fts_{table_name}` FTS5 virtual table. Query terms are individually quoted and joined with `OR` to support any-term matching.
+
+<Note>
+SQLite FTS5's `bm25()` function returns negative values by convention (lower rank = better). SQLiteSearcher negates the score so that higher values indicate better matches, consistent with the rest of the QuackIR API.
+</Note>
+
+<ParamField path="query_string" type="string" required>
+  Query string. Individual terms are quoted and OR-joined.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the base table. The FTS5 virtual table `fts_{table_name}` is queried.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, score)` tuples.
+</ResponseField>
+
+---
+
+### get_search_type
+
+```python
+searcher.get_search_type(table_name)
+```
+
+Inspects column names. Returns `SearchType.SPARSE` if a `contents` column is present, otherwise raises `ValueError`.
+
+<ParamField path="table_name" type="string" required>
+  Table to inspect.
+</ParamField>
+
+<ResponseField name="return" type="SearchType">
+  Always `SearchType.SPARSE` for valid SQLite tables.
+</ResponseField>
+
+---
+
+### filter_id
+
+```python
+SQLiteSearcher.filter_id(results, query_id)
+```
+
+Static method. Removes the entry whose `id` matches `query_id`. Called automatically by `search()`.
+
+<ParamField path="results" type="list" required>
+  List of `(id, score)` tuples.
+</ParamField>
+
+<ParamField path="query_id" type="string" default="None">
+  Document ID to remove.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  Filtered results list.
+</ResponseField>
+
+---
+
+### close
+
+```python
+searcher.close()
+```
+
+Closes the underlying SQLite connection.
+
+## Example
+
+```python
+from quackir import SearchType
+from quackir.search import SQLiteSearcher
+
+searcher = SQLiteSearcher("sparse.db")
+
+results = searcher.search(
+    method=SearchType.SPARSE,
+    query_string="information retrieval benchmarks",
+    top_n=10,
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```

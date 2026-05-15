@@ -1,0 +1,289 @@
+---
+title: "DuckDBSearcher API reference"
+description: "Full API reference for DuckDBSearcher — run sparse BM25, dense cosine similarity, or hybrid RRF retrieval against DuckDB indexes."
+---
+
+`DuckDBSearcher` queries BM25 (sparse), cosine similarity (dense), or Reciprocal Rank Fusion (hybrid) indexes stored in a DuckDB database file. It implements the abstract `Searcher` base class.
+
+```python
+from quackir.search import DuckDBSearcher
+```
+
+## Constructor
+
+```python
+DuckDBSearcher(db_path="duck.db")
+```
+
+Opens a DuckDB connection to the specified file.
+
+<ParamField path="db_path" type="string" default="duck.db">
+  Path to the DuckDB database file produced by `DuckDBIndexer`.
+</ParamField>
+
+## Methods
+
+### search
+
+```python
+searcher.search(
+    method,
+    query_id=None,
+    query_string=None,
+    query_embedding=None,
+    top_n=5,
+    tokenize_query=True,
+    table_names=["corpus"],
+    rrf_k=60,
+)
+```
+
+Main entry point for retrieval. Dispatches to `fts_search`, `embedding_search`, or `rrf_search` based on `method`, then filters out the `query_id` document from the results (useful when the query is itself a document in the index).
+
+<ParamField path="method" type="SearchType" required>
+  `SearchType.SPARSE`, `SearchType.DENSE`, or `SearchType.HYBRID`.
+</ParamField>
+
+<ParamField path="query_id" type="string" default="None">
+  Document ID to exclude from results. Pass the query document's own ID to avoid self-matches.
+</ParamField>
+
+<ParamField path="query_string" type="string" default="None">
+  Text query for sparse or hybrid search. Required when `method` is `SPARSE` or `HYBRID`.
+</ParamField>
+
+<ParamField path="query_embedding" type="number[]" default="None">
+  Query vector (list of floats) for dense or hybrid search. Required when `method` is `DENSE` or `HYBRID`.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="tokenize_query" type="boolean" default="true">
+  When `True` and `method` is `SPARSE` or `HYBRID`, the `query_string` is tokenized with Pyserini's Lucene Analyzer before querying.
+</ParamField>
+
+<ParamField path="table_names" type="string[]" default='["corpus"]'>
+  Table(s) to search. For `HYBRID`, provide two names: `[sparse_table, dense_table]`.
+</ParamField>
+
+<ParamField path="rrf_k" type="number" default="60">
+  RRF rank smoothing constant. Only used when `method` is `SearchType.HYBRID`.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(doc_id, score)` tuples ordered by descending score. The `query_id` document is excluded if provided.
+</ResponseField>
+
+---
+
+### fts_search
+
+```python
+searcher.fts_search(query_string, top_n=5, table_name="corpus")
+```
+
+Executes a BM25 full-text search using DuckDB's FTS extension with parameters `k=0.9` and `b=0.4`.
+
+<ParamField path="query_string" type="string" required>
+  Pre-processed query string (tokenized if called via `search()`).
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the sparse table to search.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, score)` tuples.
+</ResponseField>
+
+---
+
+### embedding_search
+
+```python
+searcher.embedding_search(query_embedding, top_n=5, table_name="corpus")
+```
+
+Computes cosine similarity between the query vector and all stored embeddings using `array_cosine_similarity`.
+
+<ParamField path="query_embedding" type="number[]" required>
+  Query vector as a list of floats.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the dense table to search.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, score)` tuples ordered by descending cosine similarity.
+</ResponseField>
+
+---
+
+### rrf_search
+
+```python
+searcher.rrf_search(query_string, query_embedding, top_n=5, k=60, table_names=["sparse", "dense"])
+```
+
+Combines BM25 and cosine similarity rankings using Reciprocal Rank Fusion (RRF). Each result's RRF score is:
+
+```
+rrf_score = 1 / (k + sparse_rank) + 1 / (k + dense_rank)
+```
+
+The sparse and dense tables are auto-detected from `table_names` using `get_search_type`.
+
+<ParamField path="query_string" type="string" required>
+  Query string for BM25 retrieval. Should already be tokenized.
+</ParamField>
+
+<ParamField path="query_embedding" type="number[]" required>
+  Query vector for cosine similarity retrieval.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Number of candidates fetched from each sub-ranker before fusion.
+</ParamField>
+
+<ParamField path="k" type="number" default="60">
+  RRF rank smoothing constant.
+</ParamField>
+
+<ParamField path="table_names" type="string[]" default='["sparse", "dense"]'>
+  Two table names. The method detects which is sparse and which is dense automatically.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, rrf_score)` tuples ordered by descending RRF score.
+</ResponseField>
+
+---
+
+### get_search_type
+
+```python
+searcher.get_search_type(table_name)
+```
+
+Inspects the table's column names to determine whether it is a sparse or dense table.
+
+<ParamField path="table_name" type="string" required>
+  Table to inspect.
+</ParamField>
+
+<ResponseField name="return" type="SearchType">
+  `SearchType.SPARSE` if a `contents` column exists; `SearchType.DENSE` if an `embedding` column exists.
+</ResponseField>
+
+Raises `ValueError` if neither column is found.
+
+---
+
+### filter_id
+
+```python
+DuckDBSearcher.filter_id(results, query_id)
+```
+
+Static method. Removes the entry whose `id` matches `query_id` from a results list. Called automatically by `search()`.
+
+<ParamField path="results" type="list" required>
+  List of `(id, score)` tuples.
+</ParamField>
+
+<ParamField path="query_id" type="string" required>
+  Document ID to remove.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  Filtered list with the matching entry removed.
+</ResponseField>
+
+---
+
+### close
+
+```python
+searcher.close()
+```
+
+Closes the underlying DuckDB connection.
+
+## Examples
+
+### Sparse BM25 search
+
+```python
+from quackir import SearchType
+from quackir.search import DuckDBSearcher
+
+searcher = DuckDBSearcher("sparse.db")
+
+results = searcher.search(
+    method=SearchType.SPARSE,
+    query_string="information retrieval benchmarks",
+    top_n=10,
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```
+
+### Dense cosine similarity search
+
+```python
+from quackir import SearchType
+from quackir.search import DuckDBSearcher
+
+query_vector = [0.12, -0.34, 0.56]  # replace with a real embedding
+
+searcher = DuckDBSearcher("dense.db")
+
+results = searcher.search(
+    method=SearchType.DENSE,
+    query_embedding=query_vector,
+    top_n=10,
+    table_names=["dense_corpus"],
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```
+
+### Hybrid RRF search
+
+```python
+from quackir import SearchType
+from quackir.search import DuckDBSearcher
+
+searcher = DuckDBSearcher("hybrid.db")
+
+results = searcher.search(
+    method=SearchType.HYBRID,
+    query_string="neural retrieval",
+    query_embedding=[0.12, -0.34, 0.56],
+    top_n=10,
+    table_names=["sparse_corpus", "dense_corpus"],
+    rrf_k=60,
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```

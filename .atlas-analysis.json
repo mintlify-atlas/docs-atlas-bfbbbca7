@@ -1,0 +1,114 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "QuackIR",
+  "projectDescription": "A Python toolkit for reproducible information retrieval research using relational databases (DuckDB, SQLite, PostgreSQL) for sparse, dense, and hybrid retrieval.",
+  "theme": "luma",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/indexing",
+              "guides/searching",
+              "guides/analysis",
+              "guides/database-configuration"
+            ]
+          },
+          {
+            "group": "Experiments",
+            "pages": [
+              "experiments/nfcorpus",
+              "experiments/beir-sparse",
+              "experiments/beir-dense",
+              "experiments/beir-hybrid"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/overview",
+              "api/index-types",
+              "api/search-types"
+            ]
+          },
+          {
+            "group": "Indexers",
+            "pages": [
+              "api/indexers/duckdb-indexer",
+              "api/indexers/sqlite-indexer",
+              "api/indexers/postgres-indexer"
+            ]
+          },
+          {
+            "group": "Searchers",
+            "pages": [
+              "api/searchers/duckdb-searcher",
+              "api/searchers/sqlite-searcher",
+              "api/searchers/postgres-searcher"
+            ]
+          },
+          {
+            "group": "Analysis",
+            "pages": [
+              "api/analysis/tokenize"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Sparse BM25 retrieval with DuckDB, SQLite, and PostgreSQL backends",
+    "Dense vector retrieval using cosine similarity with DuckDB and PostgreSQL",
+    "Hybrid retrieval via Reciprocal Rank Fusion (RRF) with DuckDB and PostgreSQL",
+    "Text tokenization via Pyserini's Lucene Analyzer",
+    "JSONL and Parquet data format support",
+    "CLI and Python API interfaces",
+    "Reproducible IR experiments on BEIR benchmarks",
+    "Environment variable configuration via dotenv"
+  ],
+  "publicApiSurface": [
+    "IndexType (SPARSE, DENSE)",
+    "SearchType (SPARSE, DENSE, HYBRID)",
+    "SearchDB (DUCKDB, SQLITE, POSTGRES)",
+    "DuckDBIndexer.init_table(table_name, index_type, embedding_dim)",
+    "DuckDBIndexer.load_table(table_name, file_path, index_type, pretokenized)",
+    "DuckDBIndexer.fts_index(table_name)",
+    "DuckDBIndexer.close()",
+    "PostgresIndexer.init_table(table_name, index_type, embedding_dim)",
+    "PostgresIndexer.load_table(table_name, file_path, index_type, pretokenized)",
+    "PostgresIndexer.fts_index(table_name)",
+    "SQLiteIndexer.init_table(table_name, index_type)",
+    "SQLiteIndexer.load_table(table_name, file_path, index_type, pretokenized)",
+    "SQLiteIndexer.fts_index(table_name)",
+    "DuckDBSearcher.search(method, query_id, query_string, query_embedding, top_n, tokenize_query, table_names, rrf_k)",
+    "DuckDBSearcher.fts_search(query_string, top_n, table_name)",
+    "DuckDBSearcher.embedding_search(query_embedding, top_n, table_name)",
+    "DuckDBSearcher.rrf_search(query_string, query_embedding, top_n, k, table_names)",
+    "PostgresSearcher.search(...)",
+    "SQLiteSearcher.search(...)",
+    "tokenize(to_tokenize: str) -> str",
+    "python -m quackir.index (CLI)",
+    "python -m quackir.search (CLI)",
+    "python -m quackir.analysis (CLI)"
+  ]
+}

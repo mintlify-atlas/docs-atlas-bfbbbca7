@@ -1,0 +1,71 @@
+---
+title: "SearchType enum reference"
+description: "Reference for the SearchType enum (SPARSE, DENSE, HYBRID) used to select the retrieval method when searching with QuackIR searchers."
+---
+
+`SearchType` is an enum exported from the top-level `quackir` package. It is passed as the `method` argument to `Searcher.search()` to select which retrieval strategy to execute.
+
+```python
+from quackir import SearchType
+```
+
+## Members
+
+| Member | Value | Description |
+|---|---|---|
+| `SearchType.SPARSE` | `'sparse'` | BM25 full-text search against a `contents` column. |
+| `SearchType.DENSE` | `'dense'` | Cosine similarity search against an `embedding` column. |
+| `SearchType.HYBRID` | `'hybrid'` | Reciprocal Rank Fusion (RRF) combining sparse and dense results. |
+
+## Usage
+
+Pass a `SearchType` member as the `method` argument to `searcher.search()`:
+
+```python
+from quackir import SearchType
+from quackir.search import DuckDBSearcher
+
+searcher = DuckDBSearcher("my_index.db")
+
+# Sparse BM25 search
+results = searcher.search(
+    method=SearchType.SPARSE,
+    query_string="neural information retrieval",
+    top_n=10,
+)
+
+# Dense vector search
+results = searcher.search(
+    method=SearchType.DENSE,
+    query_embedding=[0.12, -0.34, ...],  # list of floats
+    top_n=10,
+)
+
+# Hybrid RRF search (requires both query_string and query_embedding)
+results = searcher.search(
+    method=SearchType.HYBRID,
+    query_string="neural information retrieval",
+    query_embedding=[0.12, -0.34, ...],
+    top_n=10,
+    table_names=["sparse_corpus", "dense_corpus"],
+    rrf_k=60,
+)
+
+searcher.close()
+```
+
+<Note>
+When `method` is `SearchType.SPARSE` or `SearchType.HYBRID`, the `query_string` is automatically tokenized with Pyserini's Lucene Analyzer unless `tokenize_query=False` is passed.
+</Note>
+
+<Warning>
+`SQLiteSearcher` only supports `SearchType.SPARSE`. Calling `search()` with `SearchType.DENSE` or `SearchType.HYBRID` on a SQLite searcher returns no results because `embedding_search` and `rrf_search` are not implemented.
+</Warning>
+
+## Query tokenization behavior
+
+| `method` | `tokenize_query=True` (default) | `tokenize_query=False` |
+|---|---|---|
+| `SPARSE` | `query_string` is tokenized | `query_string` used as-is |
+| `DENSE` | No tokenization applied | No tokenization applied |
+| `HYBRID` | `query_string` is tokenized | `query_string` used as-is |

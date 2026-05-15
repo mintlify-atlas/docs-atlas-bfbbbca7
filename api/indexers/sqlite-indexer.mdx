@@ -1,0 +1,200 @@
+---
+title: "SQLiteIndexer API reference"
+description: "Full API reference for SQLiteIndexer — create sparse BM25 indexes in SQLite FTS5 using JSONL files. Dense and hybrid indexing are not supported."
+---
+
+`SQLiteIndexer` creates and populates BM25 (sparse) indexes stored in a SQLite database file. It implements the abstract `Indexer` base class and loads data from JSONL files. Dense indexing is not supported.
+
+```python
+from quackir.index import SQLiteIndexer
+```
+
+<Warning>
+SQLiteIndexer only supports `IndexType.SPARSE`. Attempting to create a dense table or load non-sparse data raises a `ValueError`.
+</Warning>
+
+## Constructor
+
+```python
+SQLiteIndexer(db_path="sqlite.db")
+```
+
+Opens a SQLite connection to the specified file. The file is created if it does not already exist.
+
+<ParamField path="db_path" type="string" default="sqlite.db">
+  Path to the SQLite database file.
+</ParamField>
+
+## Methods
+
+### init_table
+
+```python
+indexer.init_table(table_name, index_type, embedding_dim=768)
+```
+
+Drops any existing table with the given name and creates a new `(id TEXT PRIMARY KEY, contents TEXT)` table. Raises `ValueError` if `index_type` is not `IndexType.SPARSE`.
+
+<ParamField path="table_name" type="string" required>
+  Name of the table to create.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" required>
+  Must be `IndexType.SPARSE`. Any other value raises `ValueError`.
+</ParamField>
+
+<ParamField path="embedding_dim" type="number" default="768">
+  Accepted for interface consistency but unused.
+</ParamField>
+
+---
+
+### load_table
+
+```python
+indexer.load_table(table_name, file_path, index_type=None, pretokenized=False)
+```
+
+Dispatches to `load_jsonl_table` based on the file extension. Parquet loading is not implemented.
+
+<ParamField path="table_name" type="string" required>
+  Target table name.
+</ParamField>
+
+<ParamField path="file_path" type="string" required>
+  Path to a `.jsonl` source file.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" default="None">
+  Override the index type. When `None`, `get_index_type(table_name)` is called.
+</ParamField>
+
+<ParamField path="pretokenized" type="boolean" default="false">
+  When `False`, `contents` values are tokenized with Pyserini's Lucene Analyzer before insertion.
+</ParamField>
+
+---
+
+### load_jsonl_table
+
+```python
+indexer.load_jsonl_table(table_name, file_path, index_type, pretokenized=False)
+```
+
+Reads a JSONL file and inserts `(id, contents)` rows. Each line must be a JSON object with `id` and `contents` fields. Raises `ValueError` if `index_type` is not `IndexType.SPARSE`.
+
+<ParamField path="table_name" type="string" required>
+  Target table name.
+</ParamField>
+
+<ParamField path="file_path" type="string" required>
+  Path to the `.jsonl` file.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" required>
+  Must be `IndexType.SPARSE`.
+</ParamField>
+
+<ParamField path="pretokenized" type="boolean" default="false">
+  Skip tokenization when `True`.
+</ParamField>
+
+---
+
+### fts_index
+
+```python
+indexer.fts_index(table_name="corpus")
+```
+
+Creates an FTS5 virtual table named `fts_{table_name}` backed by the base table, using the **porter** tokenizer. The virtual table is populated immediately from the base table.
+
+```sql
+CREATE VIRTUAL TABLE fts_corpus USING fts5(
+    id, contents,
+    content='corpus', content_rowid='rowid', tokenize = 'porter'
+)
+```
+
+<Note>
+The porter stemmer is used here at the SQLite FTS5 level. However, QuackIR's tokenization pipeline (Pyserini Lucene Analyzer) already stems tokens before they are stored, so the FTS5 porter stemmer provides a second pass. For best retrieval consistency, use the default `pretokenized=False` so that index and query terms go through the same pipeline.
+</Note>
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the base table to build the FTS5 virtual table from.
+</ParamField>
+
+---
+
+### get_index_type
+
+```python
+indexer.get_index_type(table_name)
+```
+
+Inspects column names. Returns `IndexType.SPARSE` if a `contents` column is present, otherwise raises `ValueError`.
+
+<ParamField path="table_name" type="string" required>
+  Table to inspect.
+</ParamField>
+
+<ResponseField name="return" type="IndexType">
+  Always `IndexType.SPARSE` for valid SQLite tables.
+</ResponseField>
+
+---
+
+### get_num_rows
+
+```python
+indexer.get_num_rows(table_name)
+```
+
+Returns the number of rows in the given table.
+
+<ParamField path="table_name" type="string" required>
+  Table to count.
+</ParamField>
+
+<ResponseField name="return" type="number">
+  Row count as an integer.
+</ResponseField>
+
+---
+
+### close
+
+```python
+indexer.close()
+```
+
+Closes the underlying SQLite connection.
+
+## Example
+
+```python
+from quackir import IndexType
+from quackir.index import SQLiteIndexer
+
+indexer = SQLiteIndexer(db_path="sparse.db")
+
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "corpus.jsonl")  # auto-tokenizes contents
+indexer.fts_index("corpus")
+
+print(indexer.get_num_rows("corpus"), "documents indexed")
+indexer.close()
+```
+
+### Pre-tokenized JSONL
+
+```python
+from quackir import IndexType
+from quackir.index import SQLiteIndexer
+
+indexer = SQLiteIndexer(db_path="pretok.db")
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "pretokenized.jsonl", pretokenized=True)
+indexer.fts_index("corpus")
+indexer.close()
+```

@@ -1,0 +1,241 @@
+---
+title: "PostgresIndexer API reference"
+description: "Full API reference for PostgresIndexer — create sparse or dense vector indexes in PostgreSQL with pgvector support for dense retrieval."
+---
+
+`PostgresIndexer` creates and populates BM25-style full-text (sparse) or pgvector (dense) indexes in a PostgreSQL database. It implements the abstract `Indexer` base class and supports loading data from both JSONL and Parquet files.
+
+```python
+from quackir.index import PostgresIndexer
+```
+
+<Info>
+Dense indexing requires the [pgvector](https://github.com/pgvector/pgvector) extension to be installed in your PostgreSQL instance. The `embedding` column is created as a `vector(embedding_dim)` type.
+</Info>
+
+## Constructor
+
+```python
+PostgresIndexer(db_name="quackir", user="postgres")
+```
+
+Opens a `psycopg2` connection to the specified PostgreSQL database.
+
+<ParamField path="db_name" type="string" default="quackir">
+  Name of the PostgreSQL database to connect to.
+</ParamField>
+
+<ParamField path="user" type="string" default="postgres">
+  PostgreSQL username.
+</ParamField>
+
+## Methods
+
+### init_table
+
+```python
+indexer.init_table(table_name, index_type, embedding_dim=768)
+```
+
+Drops any existing table with the given name and creates a new one:
+
+- Sparse schema: `(id TEXT PRIMARY KEY, contents TEXT)`
+- Dense schema: `(id TEXT PRIMARY KEY, embedding vector(embedding_dim))`
+
+<ParamField path="table_name" type="string" required>
+  Name of the table to create.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" required>
+  `IndexType.SPARSE` or `IndexType.DENSE`.
+</ParamField>
+
+<ParamField path="embedding_dim" type="number" default="768">
+  Dimension of the embedding vectors. Only used when `index_type` is `IndexType.DENSE`.
+</ParamField>
+
+---
+
+### load_table
+
+```python
+indexer.load_table(table_name, file_path, index_type=None, pretokenized=False)
+```
+
+Dispatches to `load_jsonl_table` or `load_parquet_table` based on the file extension. If `index_type` is `None`, it is detected via `get_index_type`.
+
+<Note>
+Parquet loading is currently restricted to `IndexType.DENSE`. Passing a `.parquet` file with `IndexType.SPARSE` raises a `ValueError`.
+</Note>
+
+<ParamField path="table_name" type="string" required>
+  Target table name.
+</ParamField>
+
+<ParamField path="file_path" type="string" required>
+  Path to a `.jsonl` or `.parquet` source file.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" default="None">
+  Override the index type. When `None`, `get_index_type(table_name)` is called.
+</ParamField>
+
+<ParamField path="pretokenized" type="boolean" default="false">
+  When `False`, `contents` values are tokenized with Pyserini's Lucene Analyzer before insertion.
+</ParamField>
+
+---
+
+### load_jsonl_table
+
+```python
+indexer.load_jsonl_table(table_name, file_path, index_type, pretokenized=False)
+```
+
+Reads a JSONL file and bulk-inserts rows using `psycopg2.extras.execute_values`. Each line must be a JSON object with `id` and either `contents` (sparse) or `vector` (dense).
+
+<Note>
+Null bytes (`\x00`) in `contents` fields are replaced with the Unicode replacement character (`\uFFFD`) before insertion because PostgreSQL does not allow null characters in text columns.
+</Note>
+
+<ParamField path="table_name" type="string" required>
+  Target table name.
+</ParamField>
+
+<ParamField path="file_path" type="string" required>
+  Path to the `.jsonl` file.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" required>
+  `IndexType.SPARSE` or `IndexType.DENSE`.
+</ParamField>
+
+<ParamField path="pretokenized" type="boolean" default="false">
+  Skip tokenization when `True`. Applies to sparse indexing only.
+</ParamField>
+
+---
+
+### load_parquet_table
+
+```python
+indexer.load_parquet_table(table_name, file_path, index_type, pretokenized=False)
+```
+
+Reads a Parquet file with pandas, formats the `vector` column as a pgvector-compatible string `[f1, f2, ...]`, and bulk-copies rows using `COPY … FROM STDIN WITH CSV`.
+
+<ParamField path="table_name" type="string" required>
+  Target table name.
+</ParamField>
+
+<ParamField path="file_path" type="string" required>
+  Path to the `.parquet` file.
+</ParamField>
+
+<ParamField path="index_type" type="IndexType" required>
+  Must be `IndexType.DENSE`.
+</ParamField>
+
+<ParamField path="pretokenized" type="boolean" default="false">
+  Unused; present for interface consistency.
+</ParamField>
+
+---
+
+### fts_index
+
+```python
+indexer.fts_index(table_name="corpus")
+```
+
+Creates a GIN index on the `contents` column using `to_tsvector('simple', contents)`, enabling efficient full-text search with `to_tsquery`.
+
+```sql
+CREATE INDEX "corpus_contents_gin" ON "corpus"
+    USING gin(to_tsvector('simple', contents));
+```
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the sparse table to index.
+</ParamField>
+
+---
+
+### get_index_type
+
+```python
+indexer.get_index_type(table_name)
+```
+
+Queries `information_schema.columns` to detect index type from column names.
+
+<ParamField path="table_name" type="string" required>
+  Table to inspect.
+</ParamField>
+
+<ResponseField name="return" type="IndexType">
+  `IndexType.SPARSE` if a `contents` column exists; `IndexType.DENSE` if an `embedding` column exists.
+</ResponseField>
+
+Raises `ValueError` if neither column is found.
+
+---
+
+### get_num_rows
+
+```python
+indexer.get_num_rows(table_name)
+```
+
+Returns the number of rows in the given table.
+
+<ParamField path="table_name" type="string" required>
+  Table to count.
+</ParamField>
+
+<ResponseField name="return" type="number">
+  Row count as an integer.
+</ResponseField>
+
+---
+
+### close
+
+```python
+indexer.close()
+```
+
+Closes the underlying `psycopg2` connection.
+
+## Examples
+
+### Sparse (BM25) indexing
+
+```python
+from quackir import IndexType
+from quackir.index import PostgresIndexer
+
+indexer = PostgresIndexer(db_name="mydb", user="myuser")
+
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "corpus.jsonl")  # auto-tokenizes contents
+indexer.fts_index("corpus")
+
+print(indexer.get_num_rows("corpus"), "documents indexed")
+indexer.close()
+```
+
+### Dense (vector) indexing from Parquet
+
+```python
+from quackir import IndexType
+from quackir.index import PostgresIndexer
+
+indexer = PostgresIndexer(db_name="mydb", user="myuser")
+
+indexer.init_table("dense_corpus", IndexType.DENSE, embedding_dim=768)
+indexer.load_table("dense_corpus", "embeddings.parquet")
+
+print(indexer.get_num_rows("dense_corpus"), "vectors indexed")
+indexer.close()
+```

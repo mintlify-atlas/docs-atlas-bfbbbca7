@@ -1,0 +1,269 @@
+---
+title: "Searching sparse, dense, and hybrid indexes with QuackIR"
+description: "Run sparse BM25, dense cosine similarity, or hybrid reciprocal rank fusion retrieval over indexed corpora using DuckDB, SQLite, or PostgreSQL."
+---
+
+QuackIR's search module queries a previously built index and writes ranked results in TREC run-file format. Three retrieval methods are supported: sparse BM25 (via full-text search), dense cosine similarity (via vector search), and hybrid using reciprocal rank fusion (RRF) over one sparse and one dense index. The search method can be specified explicitly or inferred automatically from the column names in the target table.
+
+## Query file formats
+
+<Tabs>
+  <Tab title="Sparse (JSONL)">
+    Each line must be a JSON object with `id` and `contents` fields:
+
+    ```json
+    {"id": "q1", "contents": "what is a lobster roll"}
+    {"id": "q2", "contents": "in-process database systems"}
+    ```
+
+    The file may be compressed with gzip (`.jsonl.gz`).
+  </Tab>
+  <Tab title="Dense (JSONL)">
+    Each line must be a JSON object with `id` and `vector` fields:
+
+    ```json
+    {"id": "q1", "vector": [0.12, -0.34, 0.56, ...]}
+    {"id": "q2", "vector": [0.78, 0.01, -0.23, ...]}
+    ```
+  </Tab>
+  <Tab title="Hybrid (JSONL)">
+    For hybrid search, each query must have `id`, `contents`, and `vector` fields so both sparse and dense retrieval can be performed:
+
+    ```json
+    {"id": "q1", "contents": "what is a lobster roll", "vector": [0.12, -0.34, 0.56, ...]}
+    ```
+  </Tab>
+  <Tab title="TSV (sparse only)">
+    TSV files are supported for sparse retrieval only. The first column is the query id and the second column is the query text. The file may be compressed with gzip (`.tsv.gz`):
+
+    ```
+    q1	what is a lobster roll
+    q2	in-process database systems
+    ```
+
+    <Warning>
+      TSV format is only supported for sparse retrieval. Dense and hybrid search require JSONL.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Output format
+
+Results are written one result per line in standard TREC run-file format:
+
+```
+q1 Q0 doc3 1 0.8421 sparse_duckdb
+q1 Q0 doc1 2 0.7103 sparse_duckdb
+q2 Q0 doc2 1 0.9012 sparse_duckdb
+```
+
+Each field: `query_id Q0 doc_id rank score run_tag`. This format is directly compatible with `trec_eval`.
+
+## Python API
+
+<Tabs>
+  <Tab title="Sparse search">
+    Sparse retrieval uses BM25 via the database's full-text search index. Works with DuckDB, SQLite, and PostgreSQL.
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+
+    searcher = DuckDBSearcher(db_path="database.db")
+    results = searcher.search(
+        method=SearchType.SPARSE,
+        query_id="q1",
+        query_string="what is a lobster roll",
+        top_n=10,
+        table_names=["corpus"]
+    )
+    # results: list of (doc_id, score) tuples ranked by BM25 score
+    searcher.close()
+    ```
+
+    For SQLite, replace `DuckDBSearcher` with `SQLiteSearcher(db_path="sqlite.db")`. For PostgreSQL, use `PostgresSearcher(db_name="quackir", user="postgres")`.
+
+    <Note>
+      By default, the query is tokenized using Pyserini's default Lucene analyzer before being passed to the index. Pass `tokenize_query=False` to skip tokenization if your queries are already preprocessed.
+    </Note>
+  </Tab>
+  <Tab title="Dense search">
+    Dense retrieval uses cosine similarity over stored embedding vectors. Supported by DuckDB and PostgreSQL.
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+
+    query_vector = [0.12, -0.34, 0.56]  # your embedding
+
+    searcher = DuckDBSearcher(db_path="database.db")
+    results = searcher.search(
+        method=SearchType.DENSE,
+        query_id="q1",
+        query_embedding=query_vector,
+        top_n=10,
+        table_names=["corpus_dense"]
+    )
+    # results: list of (doc_id, score) tuples ranked by cosine similarity
+    searcher.close()
+    ```
+
+    <Warning>
+      SQLite does not support dense search. Using `SQLiteSearcher` with `SearchType.DENSE` raises an error.
+    </Warning>
+  </Tab>
+  <Tab title="Hybrid search (RRF)">
+    Hybrid search applies reciprocal rank fusion over results from a sparse index and a dense index. Supported by DuckDB and PostgreSQL.
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+
+    query_text = "what is a lobster roll"
+    query_vector = [0.12, -0.34, 0.56]  # your embedding
+
+    searcher = DuckDBSearcher(db_path="database.db")
+    results = searcher.search(
+        method=SearchType.HYBRID,
+        query_id="q1",
+        query_string=query_text,
+        query_embedding=query_vector,
+        top_n=10,
+        table_names=["corpus", "corpus_dense"],
+        rrf_k=60
+    )
+    # results: list of (doc_id, rrf_score) tuples
+    searcher.close()
+    ```
+
+    The RRF score for a document is `1/(k + sparse_rank) + 1/(k + dense_rank)`. The searcher automatically identifies which table is sparse and which is dense by inspecting their column names.
+
+    <Warning>
+      Hybrid search requires exactly two table names: one sparse index and one dense index. Passing two tables of the same type raises an error.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## CLI usage
+
+```bash
+python -m quackir.search \
+  --db-type <duckdb|sqlite|postgres> \
+  --topics <path> \
+  --output <path> \
+  [options]
+```
+
+### Required arguments
+
+<ParamField path="--db-type" type="string" required>
+  Database backend to use. Accepted values: `duckdb`, `sqlite`, `postgres`.
+</ParamField>
+
+<ParamField path="--topics" type="string" required>
+  Path to the query file. Accepts JSONL or TSV format (gzip-compressed files are supported). See [query file formats](#query-file-formats) above.
+</ParamField>
+
+<ParamField path="--output" type="string" required>
+  Path to write the search results. Results are written in TREC run-file format: `query_id Q0 doc_id rank score run_tag`.
+</ParamField>
+
+### Database connection arguments
+
+<ParamField path="--db-path" type="string" default="database.db">
+  Path to the database file. Used by DuckDB and SQLite. Ignored for PostgreSQL.
+</ParamField>
+
+<ParamField path="--db-name" type="string" default="quackir">
+  PostgreSQL database name. Ignored for DuckDB and SQLite.
+</ParamField>
+
+<ParamField path="--db-user" type="string" default="postgres">
+  PostgreSQL username. Ignored for DuckDB and SQLite.
+</ParamField>
+
+### Optional arguments
+
+<ParamField path="--search-method" type="string">
+  Retrieval method. Accepted values: `sparse`, `dense`, `hybrid`. If omitted, the method is inferred from the column names in the index table: a `contents` column implies sparse, an `embedding` column implies dense. If two indexes are provided and they have different column types, hybrid is used.
+</ParamField>
+
+<ParamField path="--index" type="string" default="corpus">
+  Name of the table to search. Accepts one value for sparse or dense search, or two values for hybrid search (one sparse table and one dense table). Dashes are replaced with underscores.
+</ParamField>
+
+<ParamField path="--pretokenized" type="boolean" default="false">
+  When set, skips query tokenization. Use this when your query file has already been processed by `quackir.analysis`. Has no effect for dense indexes.
+</ParamField>
+
+<ParamField path="--hits" type="integer" default="1000">
+  Number of top results to return per query.
+</ParamField>
+
+<ParamField path="--rrf-k" type="integer" default="60">
+  The `k` parameter for reciprocal rank fusion. Only applies to hybrid search. Higher values reduce the impact of rank differences between the two result lists.
+</ParamField>
+
+<ParamField path="--run-tag" type="string">
+  Tag written in the last column of the output file. Defaults to `{search_method}_{db_type}` (e.g., `sparse_duckdb`).
+</ParamField>
+
+### Examples
+
+```bash
+# Sparse BM25 search with DuckDB
+python -m quackir.search \
+  --db-type duckdb \
+  --db-path database.db \
+  --topics queries.jsonl \
+  --search-method sparse \
+  --output run.txt
+
+# Dense cosine similarity search with DuckDB
+python -m quackir.search \
+  --db-type duckdb \
+  --db-path database.db \
+  --topics queries_dense.jsonl \
+  --search-method dense \
+  --index corpus_dense \
+  --output run_dense.txt
+
+# Hybrid RRF search with DuckDB (sparse + dense indexes)
+python -m quackir.search \
+  --db-type duckdb \
+  --db-path database.db \
+  --topics queries_hybrid.jsonl \
+  --search-method hybrid \
+  --index corpus corpus_dense \
+  --rrf-k 60 \
+  --output run_hybrid.txt
+
+# Sparse search with PostgreSQL, TSV query file
+python -m quackir.search \
+  --db-type postgres \
+  --db-name quackir \
+  --db-user postgres \
+  --topics queries.tsv \
+  --search-method sparse \
+  --output run_pg.txt
+
+# Sparse search with SQLite
+python -m quackir.search \
+  --db-type sqlite \
+  --db-path sqlite.db \
+  --topics queries.jsonl \
+  --search-method sparse \
+  --output run_sqlite.txt
+```
+
+<Note>
+  SQLite only supports sparse search. Attempting dense or hybrid retrieval with SQLite will exit with an error message.
+</Note>
+
+<Tip>
+  To evaluate results with `trec_eval`, pass the output file directly:
+
+  ```bash
+  python -m pyserini.eval.trec_eval -c -m ndcg_cut.10 qrels.txt run.txt
+  ```
+</Tip>

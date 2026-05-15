@@ -1,0 +1,408 @@
+---
+title: "Sparse and Dense Retrieval on NFCorpus with DuckDB"
+description: "Step-by-step guide to reproduce sparse BM25 and dense BGE-base-en-v1.5 retrieval on NFCorpus using DuckDB with nDCG@10 evaluation."
+---
+
+[NFCorpus](https://www.cl.uni-heidelberg.de/statnlpgroup/nfcorpus/) is a full-text learning-to-rank dataset for medical information retrieval containing just 3,633 documents — small enough to run everything on a laptop. This guide walks through both sparse BM25 and dense BGE-base-en-v1.5 retrieval using DuckDB as the backend, demonstrating that a relational database can match the effectiveness of dedicated IR systems like Lucene and Faiss.
+
+<Info>
+  The key insight from this guide: the same bi-encoder conceptual framework applies across implementations. Sparse and dense retrieval differ only in their encoder representations — sparse lexical vectors versus dense embedding vectors.
+</Info>
+
+<Tip>
+  Enterprises often already have relational databases deployed. Rather than adding a separate search engine (Lucene) or vector database for RAG applications, QuackIR lets you run retrieval directly inside your existing database infrastructure.
+</Tip>
+
+## Learning outcomes
+
+After completing this guide, you will be able to:
+
+- Index NFCorpus in DuckDB with QuackIR and build an FTS index for sparse retrieval.
+- Encode documents and queries with the BGE-base-en-v1.5 model using Pyserini, producing L2-normalized 768-dimensional vectors.
+- Compute query–document scores for dense retrieval using cosine similarity.
+- Write TREC-format run files for both sparse and dense retrieval.
+- Evaluate runs with `trec_eval` (nDCG@10) and compare to Lucene/Faiss baselines.
+
+## Installation
+
+Make sure QuackIR is installed before proceeding. See the [installation guide](/installation) for setup instructions. Ensure you are running commands inside your conda environment.
+
+## Part 1: Sparse retrieval with BM25
+
+<Steps>
+  <Step title="Download the NFCorpus dataset">
+    Fetch and extract the NFCorpus data:
+
+    ```bash
+    wget https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip -P collections
+    unzip collections/nfcorpus.zip -d collections
+    ```
+
+    To see what the corpus looks like, inspect the first document:
+
+    ```bash
+    head -1 collections/nfcorpus/corpus.jsonl
+    ```
+
+    Each line is a JSON object with `_id`, `title`, `text`, and `metadata` fields. For example:
+
+    ```json
+    {"_id": "MED-10", "title": "Statin Use and Breast Cancer Survival: A Nationwide Cohort Study from Finland", "text": "Recent studies have suggested that statins...", "metadata": {"url": "http://www.ncbi.nlm.nih.gov/pubmed/25329299"}}
+    ```
+  </Step>
+
+  <Step title="Prepare the corpus">
+    QuackIR expects documents in `{"id": ..., "contents": ...}` format. Run the following Python script to merge the `title` and `text` fields:
+
+    ```python
+    import json
+
+    with open("collections/nfcorpus/quackir_corpus.jsonl", "w") as out:
+        with open("collections/nfcorpus/corpus.jsonl", "r") as f:
+            for line in f:
+                l = json.loads(line)
+                s = json.dumps({"id": l["_id"], "contents": l["title"] + " " + l["text"]})
+                out.write(s + "\n")
+    ```
+
+    Convert the queries from JSONL to TSV format:
+
+    ```python
+    import json
+
+    with open("collections/nfcorpus/queries.tsv", "w") as out:
+        with open("collections/nfcorpus/queries.jsonl", "r") as f:
+            for line in f:
+                l = json.loads(line)
+                out.write(l["_id"] + "\t" + l["text"] + "\n")
+    ```
+
+    Convert the relevance judgments (qrels) to TREC format:
+
+    ```bash
+    tail -n +2 collections/nfcorpus/qrels/test.tsv | sed 's/\t/\tQ0\t/' > collections/nfcorpus/qrels/test.qrels
+    ```
+  </Step>
+
+  <Step title="Index the corpus">
+    Index the documents into DuckDB and build the FTS index:
+
+    ```python
+    from quackir.index import DuckDBIndexer
+    from quackir import IndexType
+
+    table_name = "corpus"
+    index_type = IndexType.SPARSE
+    corpus_file = "collections/nfcorpus/quackir_corpus.jsonl"
+
+    indexer = DuckDBIndexer()
+    indexer.init_table(table_name, index_type)   # create table schema
+    indexer.load_table(table_name, corpus_file)  # load JSONL into DuckDB
+    indexer.fts_index(table_name)                # build FTS index over `contents`
+    indexer.close()
+    ```
+
+    Here is what each step does:
+
+    1. `init_table` — creates a DuckDB table with the appropriate schema for storing documents. For sparse retrieval, this includes a text column for contents.
+    2. `load_table` — inserts all documents from the JSONL file into the database table.
+    3. `fts_index` — builds the full-text search (FTS) index using DuckDB's BM25-style scoring.
+
+    This takes only a few seconds on a modern laptop since no neural inference is required.
+  </Step>
+
+  <Step title="Run sparse retrieval">
+    Run retrieval for all queries and write results to a TREC-format run file:
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+    import csv
+    import pathlib
+
+    table_name = "corpus"
+    top_k = 1000
+
+    searcher = DuckDBSearcher()
+
+    with pathlib.Path("runs/run.quackir.duckdb.sparse.nfcorpus.txt").open("w") as out:
+        with open("collections/nfcorpus/queries.tsv") as f:
+            r = csv.reader(f, delimiter="\t")
+            for qid, qtext in r:
+                hits = searcher.search(
+                    SearchType.SPARSE,
+                    query_string=qtext,
+                    table_names=[table_name],
+                    top_n=top_k,
+                )
+                for rank, h in enumerate(hits, start=1):
+                    docid = h[0]
+                    score = h[1]
+                    out.write(f"{qid} Q0 {docid} {rank} {score:.6f} QuackIR\n")
+
+    searcher.close()
+    ```
+
+    QuackIR translates your Python calls into SQL queries that DuckDB executes using its FTS capabilities. You do not need to write any SQL yourself.
+
+    **Single-query example**
+
+    You can also run retrieval for an individual query to inspect results:
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+
+    table_name = "corpus"
+    top_k = 10
+
+    searcher = DuckDBSearcher()
+    hits = searcher.search(
+        SearchType.SPARSE,
+        query_string="How to Help Prevent Abdominal Aortic Aneurysms",
+        top_n=10,
+        table_names=[table_name],
+    )
+
+    for i in range(0, top_k):
+        print(f'{i+1:2} {hits[i][0]:7} {hits[i][1]:.6f}')
+
+    searcher.close()
+    ```
+
+    Expected output:
+
+    ```
+     1 MED-4555 9.790146
+     2 MED-4423 6.976107
+     3 MED-3180 5.932539
+     4 MED-2718 4.941778
+     5 MED-1309 4.792084
+     6 MED-4424 4.714365
+     7 MED-1705 4.596784
+     8 MED-4902 4.412193
+     9 MED-1009 4.314793
+    10 MED-1512 4.278235
+    ```
+
+    You can verify these match the batch run:
+
+    ```bash
+    grep PLAIN-3074 runs/run.quackir.duckdb.sparse.nfcorpus.txt | head -10
+    ```
+
+    ```
+    PLAIN-3074 Q0 MED-4555 1 9.790146 QuackIR
+    PLAIN-3074 Q0 MED-4423 2 6.976107 QuackIR
+    PLAIN-3074 Q0 MED-3180 3 5.932539 QuackIR
+    PLAIN-3074 Q0 MED-2718 4 4.941778 QuackIR
+    PLAIN-3074 Q0 MED-1309 5 4.792084 QuackIR
+    PLAIN-3074 Q0 MED-4424 6 4.714365 QuackIR
+    PLAIN-3074 Q0 MED-1705 7 4.596784 QuackIR
+    PLAIN-3074 Q0 MED-4902 8 4.412193 QuackIR
+    PLAIN-3074 Q0 MED-1009 9 4.314793 QuackIR
+    PLAIN-3074 Q0 MED-1512 10 4.278235 QuackIR
+    ```
+
+    Notice how similar the QuackIR API is to Pyserini's `LuceneSearcher` interface — both provide a clean, Pythonic API even though they use different backends.
+  </Step>
+
+  <Step title="Evaluate sparse retrieval">
+    Evaluate using `trec_eval`:
+
+    ```bash
+    python -m pyserini.eval.trec_eval \
+      -c -m ndcg_cut.10 collections/nfcorpus/qrels/test.qrels \
+      runs/run.quackir.duckdb.sparse.nfcorpus.txt
+    ```
+
+    Expected result:
+
+    ```
+    ndcg_cut_10             all     0.3206
+    ```
+
+    This nDCG@10 score of **0.3206** is very close to the Lucene BM25 baseline of **0.3218**. The small difference is due to minor formula variations between DuckDB and Lucene: DuckDB's BM25 explicitly includes a `(k1 + 1)` multiplier and does not use Lucene's document-length caching strategy. Despite these implementation differences, the effectiveness is nearly identical.
+  </Step>
+</Steps>
+
+## Part 2: Dense retrieval with BGE-base-en-v1.5
+
+Dense retrieval uses the `BAAI/bge-base-en-v1.5` encoder to produce 768-dimensional L2-normalized vectors. QuackIR does not include encoding functionality, so Pyserini handles the encoding step.
+
+<Steps>
+  <Step title="Encode documents with Pyserini">
+    Encode the corpus using the BGE-base-en-v1.5 model:
+
+    ```bash
+    python -m pyserini.encode \
+        input   --corpus collections/nfcorpus/corpus.jsonl \
+                        --fields title text \
+        output  --embeddings indexes/nfcorpus.bge-base-en-v1.5 \
+        encoder --encoder BAAI/bge-base-en-v1.5 --l2-norm \
+                        --device cpu \
+                        --pooling mean \
+                        --fields title text \
+                        --batch 32
+    ```
+
+    <Tip>
+      Use `--device cuda` for faster encoding if you have a CUDA-enabled GPU. Adjust `--batch` according to your available memory.
+    </Tip>
+
+    This takes a few minutes on a laptop since it performs neural inference on the CPU. Inspect the first output line to verify the encoding worked:
+
+    ```bash
+    head -n 1 indexes/nfcorpus.bge-base-en-v1.5/embeddings.jsonl
+    ```
+
+    You should see a JSON line with `id`, `contents`, and a `vector` field containing 768 floats.
+  </Step>
+
+  <Step title="Encode queries">
+    Encode the queries using the same model:
+
+    ```bash
+    python -m pyserini.encode \
+        input   --corpus collections/nfcorpus/queries.jsonl \
+                        --fields text \
+        output  --embeddings collections/nfcorpus/queries.bge-base-en-v1.5 \
+        encoder --encoder BAAI/bge-base-en-v1.5 --l2-norm \
+                        --device cpu \
+                        --pooling mean \
+                        --batch 32
+    ```
+  </Step>
+
+  <Step title="Convert embeddings to Parquet">
+    QuackIR's DuckDB indexer expects documents with only `id` and `vector` fields. Convert the Pyserini JSONL output to Parquet format:
+
+    ```python
+    import json
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    data = {"id": [], "vector": []}
+
+    with open("indexes/nfcorpus.bge-base-en-v1.5/embeddings.jsonl", "r") as f_in:
+        for line in f_in:
+            doc = json.loads(line)
+            data["id"].append(doc["id"])
+            data["vector"].append(doc["vector"])
+
+    table = pa.table(data)
+    pq.write_table(table, "indexes/nfcorpus.bge-base-en-v1.5/embeddings.parquet")
+    ```
+
+    <Note>
+      You can keep the data in JSONL format instead of converting to Parquet, as long as you include only the `id` and `vector` fields. Parquet is used here to demonstrate that the indexer can read it.
+    </Note>
+  </Step>
+
+  <Step title="Index embeddings into DuckDB">
+    Load the pre-encoded vectors into a DuckDB table:
+
+    ```python
+    from quackir.index import DuckDBIndexer
+    from quackir import IndexType
+
+    table_name = "corpus_dense"
+    index_type = IndexType.DENSE
+    corpus_embeddings = "indexes/nfcorpus.bge-base-en-v1.5/embeddings.parquet"
+
+    indexer = DuckDBIndexer()
+    indexer.init_table(table_name, index_type, embedding_dim=768)
+    indexer.load_table(table_name, corpus_embeddings)
+
+    indexer.close()
+    ```
+
+    Here is what each step does:
+
+    1. `init_table` — creates a DuckDB table with columns for document ID and a 768-dimensional embedding vector.
+    2. `load_table` — reads the Parquet file and inserts the pre-encoded vectors.
+
+    There is no `fts_index` step for dense retrieval. Dense retrieval uses vector similarity instead of BM25. This step completes in a few seconds since it only loads precomputed vectors.
+  </Step>
+
+  <Step title="Run dense retrieval">
+    Run retrieval using the encoded query vectors:
+
+    ```python
+    from quackir.search import DuckDBSearcher
+    from quackir import SearchType
+    import json
+    import pathlib
+
+    table_name = "corpus_dense"
+    top_k = 1000
+
+    searcher = DuckDBSearcher()
+
+    with pathlib.Path("runs/run.quackir.duckdb.dense.nfcorpus.txt").open("w") as out:
+        with open("collections/nfcorpus/queries.bge-base-en-v1.5/embeddings.jsonl") as f:
+            for line in f:
+                query = json.loads(line)
+                qid = query["id"]
+                qvector = query["vector"]
+
+                hits = searcher.search(
+                    SearchType.DENSE,
+                    query_embedding=qvector,
+                    table_names=[table_name],
+                    top_n=top_k,
+                )
+
+                for rank, h in enumerate(hits, start=1):
+                    docid = h[0]
+                    score = h[1]
+                    out.write(f"{qid} Q0 {docid} {rank} {score:.6f} QuackIR\n")
+
+    searcher.close()
+    ```
+
+    QuackIR uses DuckDB's [`array_cosine_similarity`](https://duckdb.org/docs/stable/sql/functions/array#array_cosine_similarityarray1-array2) function for vector similarity. Under the hood it performs an exact brute-force search over all document vectors.
+
+    <Note>
+      Because documents and queries are encoded with `--l2-norm`, all embeddings are unit vectors. Cosine similarity then equals dot product: cos(θ) = **u** · **v** when ‖**u**‖ = ‖**v**‖ = 1.
+    </Note>
+  </Step>
+
+  <Step title="Evaluate dense retrieval">
+    Evaluate using `trec_eval`:
+
+    ```bash
+    python -m pyserini.eval.trec_eval \
+        -c -m ndcg_cut.10 collections/nfcorpus/qrels/test.qrels \
+        runs/run.quackir.duckdb.dense.nfcorpus.txt
+    ```
+
+    Expected result:
+
+    ```
+    ndcg_cut_10             all     0.3808
+    ```
+
+    This matches the Pyserini/Faiss BGE-base-en-v1.5 baseline of **0.3808** exactly.
+  </Step>
+</Steps>
+
+## Summary of results
+
+| Model | Backend | nDCG@10 | Baseline |
+|---|---|---|---|
+| BM25 (sparse) | DuckDB | 0.3206 | Lucene: 0.3218 |
+| BGE-base-en-v1.5 (dense) | DuckDB | 0.3808 | Faiss: 0.3808 |
+
+## What have we learned?
+
+- Sparse retrieval and dense retrieval are both instantiations of a bi-encoder architecture. The only difference is the encoder: sparse uses lexical term vectors, dense uses neural embeddings.
+- With DuckDB, you build an FTS index for sparse and load pre-encoded embeddings for dense — there is no separate search engine required.
+- DuckDB achieves nDCG@10 = 0.3206 for sparse (vs. Lucene's 0.3218) and 0.3808 for dense (identical to the Faiss baseline). Relational databases are viable for retrieval, especially for RAG applications.
+- For enterprises with existing relational databases, QuackIR adds retrieval capability without introducing new infrastructure like Elasticsearch or dedicated vector databases.
+
+## Reproduction log
+
+Before moving on, add an entry to the [Reproduction Log](https://github.com/castorini/quackir/blob/main/docs/experiments-nfcorpus.md#reproduction-log) at the bottom of the source document: use `yyyy-mm-dd`, a commit ID from the main trunk of QuackIR, and its 7-hexadecimal prefix as the link anchor text.
+
+- Results reproduced by [@brandonzhou2002](https://github.com/brandonzhou2002) on 2025-10-30 (commit [`c9a80ed`](https://github.com/castorini/quackir/commit/c9a80edf993c3e7f17b34117d6f6b6e1e82051a6))

@@ -1,0 +1,96 @@
+---
+title: "tokenize() function reference"
+description: "Reference for the tokenize() function that wraps Pyserini's default Lucene Analyzer to pre-process text for sparse indexing and search."
+---
+
+`tokenize` is a thin wrapper around Pyserini's default Lucene Analyzer. It converts raw text into a space-joined string of tokens that is consistent across both indexing and querying, ensuring that the same normalization pipeline applies to documents and queries alike.
+
+```python
+from quackir.analysis import tokenize
+```
+
+## Signature
+
+```python
+def tokenize(to_tokenize: str) -> str
+```
+
+## Parameters
+
+<ParamField path="to_tokenize" type="string" required>
+  The raw text string to analyze and tokenize.
+</ParamField>
+
+## Return value
+
+<ResponseField name="return" type="string">
+  A space-joined string of tokens produced by Pyserini's default Lucene Analyzer (the analyzer returned by `get_lucene_analyzer()`). The analyzer applies lowercasing, stopword removal, and Porter stemming.
+</ResponseField>
+
+## Implementation
+
+The module-level `analyzer` object is created once at import time:
+
+```python
+from pyserini.analysis import Analyzer, get_lucene_analyzer
+
+analyzer = Analyzer(get_lucene_analyzer())
+
+def tokenize(to_tokenize: str) -> str:
+    return ' '.join(analyzer.analyze(to_tokenize))
+```
+
+`get_lucene_analyzer()` returns Pyserini's default English analyzer, which performs:
+
+- Lowercasing
+- Stopword removal (English stopword list)
+- Porter stemming
+
+## When it is called automatically
+
+You do not need to call `tokenize` directly in most workflows. QuackIR calls it internally in the following places:
+
+| Location | When |
+|---|---|
+| `DuckDBIndexer.load_jsonl_table` | `index_type == IndexType.SPARSE` and `pretokenized=False` |
+| `SQLiteIndexer.load_jsonl_table` | `index_type == IndexType.SPARSE` and `pretokenized=False` |
+| `PostgresIndexer.load_jsonl_table` | `index_type == IndexType.SPARSE` and `pretokenized=False` |
+| `Searcher.search` | `method != SearchType.DENSE` and `tokenize_query=True` |
+
+Pass `pretokenized=True` to indexers or `tokenize_query=False` to searchers to skip automatic tokenization when your data is already tokenized.
+
+## Example
+
+```python
+from quackir.analysis import tokenize
+
+raw = "The quick brown foxes are jumping over lazy dogs"
+tokens = tokenize(raw)
+print(tokens)
+# 'quick brown fox jump lazi dog'
+```
+
+<Tip>
+Use `tokenize` directly when you want to pre-process a corpus offline and store already-tokenized text. This avoids redundant tokenization at index load time when you later pass `pretokenized=True`.
+</Tip>
+
+```python
+import json
+from quackir.analysis import tokenize
+from quackir import IndexType
+from quackir.index import DuckDBIndexer
+
+# Pre-tokenize and write a new JSONL file
+with open("corpus.jsonl") as fin, open("tokenized.jsonl", "w") as fout:
+    for line in fin:
+        doc = json.loads(line)
+        doc["contents"] = tokenize(doc["contents"])
+        fout.write(json.dumps(doc) + "\n")
+
+# Load the pre-tokenized file, skipping the tokenization step
+indexer = DuckDBIndexer("my_index.db")
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "tokenized.jsonl", pretokenized=True)
+indexer.fts_index("corpus")
+indexer.close()
+```

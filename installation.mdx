@@ -1,0 +1,97 @@
+---
+title: "Install QuackIR and its dependencies"
+description: "Set up a conda environment, install system and Python dependencies, and optionally configure PostgreSQL for the PostgreSQL backend."
+---
+
+QuackIR requires Python 3.10, a set of conda-managed system packages (including Java for Pyserini's Lucene analyzer), and several Python packages. DuckDB and SQLite work out of the box with no server setup. PostgreSQL requires additional initialization if you want to use the PostgreSQL backend.
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the repository and its submodules. The `--recurse-submodules` flag is required to pull in dependencies bundled as git submodules.
+
+    ```bash
+    git clone https://github.com/castorini/quackir.git --recurse-submodules
+    ```
+  </Step>
+
+  <Step title="Create and activate a conda environment">
+    QuackIR requires Python 3.10. Create a dedicated environment to avoid conflicts with other projects.
+
+    ```bash
+    conda create -n quackir python=3.10
+    conda activate quackir
+    ```
+  </Step>
+
+  <Step title="Install conda dependencies">
+    Install system-level dependencies via conda-forge. This includes PostgreSQL, the pgvector extension, OpenJDK 21 (required by Pyserini's Lucene analyzer), and Maven.
+
+    ```bash
+    conda install -c conda-forge postgresql pgvector openjdk=21 maven -y
+    ```
+
+    <Note>
+      PostgreSQL and pgvector are installed here so that the `psycopg2` Python package can link against them at install time. You do not need to run a PostgreSQL server unless you plan to use the PostgreSQL backend.
+    </Note>
+  </Step>
+
+  <Step title="Install Python dependencies">
+    From the repository root, install all Python dependencies:
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    The `requirements.txt` file installs the following packages:
+
+    | Package | Version | Purpose |
+    |---|---|---|
+    | `duckdb` | 1.1.1 | In-process analytical database for sparse, dense, and hybrid retrieval |
+    | `tqdm` | 4.66.5 | Progress bars during indexing |
+    | `pyserini` | 1.0.0 | Lucene Porter tokenizer for BM25 text analysis |
+    | `psycopg2` | 2.9.10 | PostgreSQL adapter for the PostgreSQL backend |
+    | `dotenv` | latest | Load database configuration from `.env` files |
+    | `pyarrow` | latest | Parquet file support for loading dense embedding tables |
+    | `fastparquet` | latest | Parquet file support (alternative engine) |
+    | `faiss-cpu` | latest | Approximate nearest-neighbor search used by Pyserini |
+  </Step>
+
+  <Step title="Set up PostgreSQL (optional)">
+    This step is only needed if you intend to use the PostgreSQL backend (`--db-type postgres`). DuckDB and SQLite require no server setup and are ready to use immediately after the previous step.
+
+    Initialize a local PostgreSQL data directory, start the server, create the database, and enable the `pgvector` extension for dense retrieval:
+
+    ```bash
+    initdb -D mydb
+    pg_ctl -D mydb -l logfile start &
+    createdb quackir
+    psql quackir
+    ```
+
+    Inside the `psql` shell, run:
+
+    ```sql
+    create user postgres superuser;
+    create extension vector;
+    \q
+    ```
+
+    <Warning>
+      The `create extension vector` command requires the `pgvector` conda package installed in step 3. If you skip that package, dense and hybrid retrieval will not be available on the PostgreSQL backend.
+    </Warning>
+  </Step>
+</Steps>
+
+## Verify the installation
+
+After completing the steps above, verify that QuackIR imports correctly:
+
+```python
+from quackir import IndexType, SearchType, SearchDB
+
+print(list(IndexType))   # [<IndexType.SPARSE: 'sparse'>, <IndexType.DENSE: 'dense'>]
+print(list(SearchType))  # [<SearchType.SPARSE: 'sparse'>, <SearchType.DENSE: 'dense'>, <SearchType.HYBRID: 'hybrid'>]
+print(list(SearchDB))    # [<SearchDB.DUCKDB: 'duckdb'>, <SearchDB.SQLITE: 'sqlite'>, <SearchDB.POSTGRES: 'postgres'>]
+```
+
+If the imports succeed without errors, your environment is ready.

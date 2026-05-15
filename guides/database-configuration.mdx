@@ -1,0 +1,197 @@
+---
+title: "Configure database connections for QuackIR backends"
+description: "Set up DuckDB, SQLite, or PostgreSQL as the storage backend for QuackIR indexing and search, and configure connections via CLI flags or a .env file."
+---
+
+QuackIR supports three database backends: DuckDB, SQLite, and PostgreSQL. DuckDB and SQLite are file-based and require no server; they are ready to use immediately after installation. PostgreSQL requires a running server and additional initialization, but supports dense and hybrid retrieval in addition to sparse. Every `quackir.index` and `quackir.search` command requires you to specify a backend and its connection parameters via CLI flags or environment variables.
+
+## Backend comparison
+
+| Feature | DuckDB | SQLite | PostgreSQL |
+|---|---|---|---|
+| Sparse (BM25) | Yes | Yes | Yes |
+| Dense (vector) | Yes | No | Yes |
+| Hybrid (RRF) | Yes | No | Yes |
+| Server required | No | No | Yes |
+| Parquet input | Yes | No | Yes |
+| Default db path / name | `database.db` | `database.db` | `quackir` |
+
+<Warning>
+  SQLite only supports sparse indexing and search. Attempting dense or hybrid operations with SQLite will raise an error.
+</Warning>
+
+## DuckDB
+
+DuckDB stores the entire database in a single file. No server or configuration is needed beyond specifying the file path.
+
+<ParamField path="--db-type" type="string" required>
+  Must be `duckdb`.
+</ParamField>
+
+<ParamField path="--db-path" type="string" default="database.db">
+  Path to the DuckDB database file. Created automatically if it does not exist.
+</ParamField>
+
+```bash
+python -m quackir.index \
+  --db-type duckdb \
+  --db-path database.db \
+  --input corpus.jsonl \
+  --index-type sparse
+```
+
+Python API:
+
+```python
+from quackir.index import DuckDBIndexer
+from quackir import IndexType
+
+indexer = DuckDBIndexer(db_path="database.db")
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "corpus.jsonl", IndexType.SPARSE)
+indexer.fts_index("corpus")
+indexer.close()
+```
+
+## SQLite
+
+SQLite, like DuckDB, is file-based and requires no server setup.
+
+<ParamField path="--db-type" type="string" required>
+  Must be `sqlite`.
+</ParamField>
+
+<ParamField path="--db-path" type="string" default="database.db">
+  Path to the SQLite database file. Created automatically if it does not exist.
+</ParamField>
+
+```bash
+python -m quackir.index \
+  --db-type sqlite \
+  --db-path sqlite.db \
+  --input corpus.jsonl \
+  --index-type sparse
+```
+
+Python API:
+
+```python
+from quackir.index import SQLiteIndexer
+from quackir import IndexType
+
+indexer = SQLiteIndexer(db_path="sqlite.db")
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "corpus.jsonl", IndexType.SPARSE)
+indexer.fts_index("corpus")
+indexer.close()
+```
+
+<Warning>
+  If you use both DuckDB and SQLite, point `--db-path` to different file paths. Both backends use `database.db` as the default, so using the same path for both will corrupt the other backend's data.
+</Warning>
+
+## PostgreSQL
+
+PostgreSQL requires a running server with the `quackir` database created and — for dense retrieval — the `pgvector` extension installed.
+
+<ParamField path="--db-type" type="string" required>
+  Must be `postgres`.
+</ParamField>
+
+<ParamField path="--db-name" type="string" default="quackir">
+  Name of the PostgreSQL database.
+</ParamField>
+
+<ParamField path="--db-user" type="string" default="postgres">
+  PostgreSQL username.
+</ParamField>
+
+### Server setup
+
+<Steps>
+  <Step title="Initialize a data directory">
+    ```bash
+    initdb -D mydb
+    ```
+  </Step>
+  <Step title="Start the server">
+    ```bash
+    pg_ctl -D mydb -l logfile start &
+    ```
+  </Step>
+  <Step title="Create the database">
+    ```bash
+    createdb quackir
+    psql quackir
+    ```
+  </Step>
+  <Step title="Create user and enable pgvector">
+    Inside the `psql` shell:
+
+    ```sql
+    create user postgres superuser;
+    create extension vector;
+    \q
+    ```
+
+    <Warning>
+      The `create extension vector` command requires the `pgvector` conda package. Without it, dense and hybrid retrieval will not be available on the PostgreSQL backend. See [installation](/installation) for the full setup.
+    </Warning>
+  </Step>
+</Steps>
+
+Once the server is running, use the backend like this:
+
+```bash
+python -m quackir.index \
+  --db-type postgres \
+  --db-name quackir \
+  --db-user postgres \
+  --input corpus.jsonl \
+  --index-type sparse
+```
+
+Python API:
+
+```python
+from quackir.index import PostgresIndexer
+from quackir import IndexType
+
+indexer = PostgresIndexer(db_name="quackir", user="postgres")
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "corpus.jsonl", IndexType.SPARSE)
+indexer.fts_index("corpus")
+indexer.close()
+```
+
+## Dotenv configuration
+
+All database connection parameters can be set via environment variables in a `.env` file in your working directory. When a `.env` file is present, its values override any CLI arguments.
+
+```bash
+# .env
+DB_TYPE=duckdb
+DB_PATH=database.db
+DB_NAME=quackir
+DB_USER=postgres
+```
+
+| Variable | Overrides | Description |
+|---|---|---|
+| `DB_TYPE` | `--db-type` | Backend type: `duckdb`, `sqlite`, or `postgres` |
+| `DB_PATH` | `--db-path` | Database file path (DuckDB and SQLite) |
+| `DB_NAME` | `--db-name` | Database name (PostgreSQL) |
+| `DB_USER` | `--db-user` | Database username (PostgreSQL) |
+
+<Warning>
+  Dotenv values override command-line arguments. If a `.env` file is present in your working directory, its values take precedence over any `--db-*` flags you pass.
+</Warning>
+
+With a `.env` file configured, you can omit connection flags from the command line entirely:
+
+```bash
+# With a .env file present, --db-type and --db-path are read from the environment
+python -m quackir.index \
+  --input corpus.jsonl \
+  --index-type sparse
+```

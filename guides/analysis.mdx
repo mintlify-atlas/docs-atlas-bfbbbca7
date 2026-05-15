@@ -1,0 +1,142 @@
+---
+title: "Tokenize and analyze text for indexing with QuackIR"
+description: "Tokenize documents and queries with Pyserini's default Lucene analyzer, and convert raw JSONL or TSV files into the format expected by quackir.index."
+---
+
+The `quackir.analysis` module wraps Pyserini's default Lucene analyzer to tokenize text for sparse indexing and retrieval. The analyzer lowercases input text, removes English stopwords, and applies Porter stemming via `get_lucene_analyzer()` from Pyserini. The CLI tool also handles format conversion: it reads JSONL or TSV files, extracts the relevant text fields, tokenizes them, and writes output in the `{"id": ..., "contents": ...}` JSONL format that `quackir.index` expects for sparse indexes.
+
+<Note>
+  Tokenization is applied automatically during sparse indexing (`quackir.index`) and sparse search (`quackir.search`) unless the `--pretokenized` flag is set. You only need to run `quackir.analysis` directly if you want to pre-process data in a separate step, inspect the tokenized output, or reuse tokenized files across multiple indexing runs.
+</Note>
+
+## Python API
+
+The `tokenize` function takes a string and returns the whitespace-joined token sequence produced by Pyserini's default Lucene analyzer:
+
+```python
+from quackir.analysis import tokenize
+
+result = tokenize("What is a lobster roll")
+print(result)  # whitespace-separated token string
+```
+
+```python
+def tokenize(to_tokenize: str) -> str:
+    ...
+```
+
+**Parameters**
+
+<ParamField path="to_tokenize" type="string" required>
+  The string to tokenize. Returns the analyzer's tokens joined with single spaces.
+</ParamField>
+
+## CLI usage
+
+```bash
+python -m quackir.analysis \
+  --input <path> \
+  --output <path>
+```
+
+### Required arguments
+
+<ParamField path="--input" type="string" required>
+  Path to an input file or directory. Accepted file formats: `.jsonl` and `.tsv` (gzip-compressed variants such as `.jsonl.gz` and `.tsv.gz` are also supported). When a directory is given, every file containing `.jsonl` or `.tsv` in its name is processed; other files and subdirectories are skipped. A progress message is printed after each file.
+</ParamField>
+
+<ParamField path="--output" type="string" required>
+  Path to the output JSONL file. Each line is written as `{"id": "<id>", "contents": "<tokenized text>"}`. This format is exactly what `quackir.index` expects for sparse indexes and what `quackir.search` expects for sparse retrieval queries.
+</ParamField>
+
+## Input field extraction rules
+
+The field used as text input depends on the file type and the fields present.
+
+<Tabs>
+  <Tab title="JSONL">
+    The first field of each JSON object is taken as the identifier. The text to tokenize is selected using the following priority:
+
+    1. If both `title` and `text` fields are present, their values are concatenated (`title + " " + text`) and tokenized. All other fields are ignored.
+    2. If a `contents` field is present, its value is tokenized. All other fields are ignored.
+    3. Otherwise, the values of all fields except the first (the id field) are concatenated and tokenized.
+
+    Example input variants:
+
+    ```json
+    {"id": "doc1", "title": "Lobster roll", "text": "A sandwich made with lobster meat."}
+    ```
+
+    ```json
+    {"id": "doc2", "contents": "DuckDB is an in-process analytical database."}
+    ```
+
+    ```json
+    {"docid": "doc3", "body": "Reciprocal rank fusion combines ranked lists."}
+    ```
+  </Tab>
+  <Tab title="TSV">
+    The first column is the identifier. All remaining columns are concatenated with a space and tokenized.
+
+    ```
+    doc1	A sandwich made with lobster meat.
+    doc2	DuckDB is an in-process analytical database.
+    ```
+  </Tab>
+</Tabs>
+
+## Output format
+
+Every line of the output file is a JSON object with exactly two fields:
+
+```json
+{"id": "doc1", "contents": "sandwich made lobster meat"}
+{"id": "doc2", "contents": "duckdb in-process analyt databas"}
+```
+
+<Note>
+  This output format is exactly what `quackir.index` expects for sparse indexing. Pass the output file to `--input` of `quackir.index --index-type sparse --pretokenized` to skip re-tokenization during indexing.
+</Note>
+
+## Example workflow
+
+<Steps>
+  <Step title="Tokenize a raw corpus">
+    Run the analysis CLI to pre-process your corpus:
+
+    ```bash
+    python -m quackir.analysis \
+      --input raw_corpus.jsonl \
+      --output tokenized_corpus.jsonl
+    ```
+  </Step>
+  <Step title="Index with pretokenized flag">
+    Pass `--pretokenized` to `quackir.index` so the already-tokenized contents are loaded as-is:
+
+    ```bash
+    python -m quackir.index \
+      --db-type duckdb \
+      --db-path database.db \
+      --input tokenized_corpus.jsonl \
+      --index-type sparse \
+      --pretokenized
+    ```
+  </Step>
+  <Step title="Tokenize queries and search">
+    Pre-process your query file in the same way, then search with `--pretokenized`:
+
+    ```bash
+    python -m quackir.analysis \
+      --input raw_queries.jsonl \
+      --output tokenized_queries.jsonl
+
+    python -m quackir.search \
+      --db-type duckdb \
+      --db-path database.db \
+      --topics tokenized_queries.jsonl \
+      --search-method sparse \
+      --pretokenized \
+      --output run.txt
+    ```
+  </Step>
+</Steps>

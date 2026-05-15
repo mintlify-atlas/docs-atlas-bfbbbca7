@@ -1,0 +1,90 @@
+---
+title: "QuackIR Python API Overview"
+description: "Overview of the QuackIR Python API including enums, indexers, searchers, and analysis utilities across DuckDB, SQLite, and PostgreSQL."
+---
+
+QuackIR exposes a modular Python API for building and querying information retrieval indexes on top of relational databases. The top-level `quackir` package exports the three enums that control indexing and retrieval behavior. Backend-specific indexers and searchers live in `quackir.index` and `quackir.search`, and text analysis utilities are available in `quackir.analysis`.
+
+## Public exports
+
+The following names are importable directly from `quackir`:
+
+| Name | Kind | Description |
+|---|---|---|
+| `IndexType` | Enum | Selects sparse (BM25) or dense (vector) indexing. |
+| `SearchType` | Enum | Selects sparse, dense, or hybrid retrieval. |
+| `SearchDB` | Enum | Identifies the target database backend. |
+
+```python
+from quackir import IndexType, SearchType, SearchDB
+```
+
+## Module structure
+
+```python
+# Enums
+from quackir import IndexType, SearchType, SearchDB
+
+# Indexers
+from quackir.index import DuckDBIndexer, SQLiteIndexer, PostgresIndexer
+
+# Searchers
+from quackir.search import DuckDBSearcher, SQLiteSearcher, PostgresSearcher
+
+# Text analysis
+from quackir.analysis import tokenize
+```
+
+## Quick start
+
+The following example indexes a JSONL corpus with DuckDB and runs a BM25 search against it.
+
+```python
+from quackir import IndexType, SearchType
+from quackir.index import DuckDBIndexer
+from quackir.search import DuckDBSearcher
+
+# --- Indexing ---
+indexer = DuckDBIndexer(db_path="my_index.db")
+indexer.init_table("corpus", IndexType.SPARSE)
+indexer.load_table("corpus", "corpus.jsonl")
+indexer.fts_index("corpus")
+indexer.close()
+
+# --- Searching ---
+searcher = DuckDBSearcher(db_path="my_index.db")
+results = searcher.search(
+    method=SearchType.SPARSE,
+    query_string="information retrieval",
+    top_n=10,
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```
+
+<Tip>
+Pass `pretokenized=True` to `load_table` if your JSONL data has already been tokenized with Pyserini's Lucene analyzer, skipping the automatic tokenization step.
+</Tip>
+
+## API sections
+
+<CardGroup cols={2}>
+  <Card title="Enums" icon="list" href="/api/index-types">
+    `IndexType` and `SearchDB` — configure indexing backends and index kinds.
+  </Card>
+  <Card title="SearchType" icon="magnifying-glass" href="/api/search-types">
+    `SearchType` — choose sparse, dense, or hybrid retrieval.
+  </Card>
+  <Card title="Indexers" icon="database" href="/api/indexers/duckdb-indexer">
+    DuckDB, SQLite, and PostgreSQL indexers for building BM25 and vector indexes.
+  </Card>
+  <Card title="Searchers" icon="arrow-up-right-from-square" href="/api/searchers/duckdb-searcher">
+    DuckDB, SQLite, and PostgreSQL searchers for running retrieval queries.
+  </Card>
+  <Card title="Analysis" icon="flask" href="/api/analysis/tokenize">
+    `tokenize()` — Pyserini Lucene Analyzer wrapper for sparse preprocessing.
+  </Card>
+</CardGroup>

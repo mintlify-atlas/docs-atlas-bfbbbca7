@@ -1,0 +1,215 @@
+---
+title: "Index sparse BM25 and dense vector corpora with QuackIR"
+description: "Load JSONL or Parquet corpora into sparse BM25 or dense vector indexes, with optional tokenization, across DuckDB, SQLite, and PostgreSQL backends."
+---
+
+Indexing in QuackIR reads a corpus from JSONL or Parquet files, optionally tokenizes document text, and writes a structured table into a database that can later be queried by `quackir.search`. For sparse indexes the table stores `id` and `contents` columns; for dense indexes it stores `id` and `embedding` columns. Once the table is populated, `fts_index` builds the full-text or vector index on top.
+
+## Input data format
+
+<Tabs>
+  <Tab title="Sparse (JSONL)">
+    Each line must be a JSON object with `id` and `contents` fields:
+
+    ```json
+    {"id": "doc1", "contents": "A lobster roll is a seafood dish native to New England."}
+    {"id": "doc2", "contents": "DuckDB is an in-process analytical database management system."}
+    ```
+
+    Unless `--pretokenized` is set, QuackIR tokenizes `contents` automatically using Pyserini's default Lucene analyzer before writing to the database.
+  </Tab>
+  <Tab title="Dense (JSONL)">
+    Each line must be a JSON object with `id` and `vector` fields. The `vector` value is a list of floats whose length must match `--dimension` (default 768):
+
+    ```json
+    {"id": "doc1", "vector": [0.12, -0.34, 0.56, ...]}
+    {"id": "doc2", "vector": [0.78, 0.01, -0.23, ...]}
+    ```
+  </Tab>
+  <Tab title="Dense (Parquet)">
+    Parquet files must have exactly two columns: the first is the document id and the second is named `vector` and holds the embedding array.
+
+    <Warning>
+      Parquet input is only valid for dense indexes. It cannot be used with sparse indexes or with the SQLite backend.
+    </Warning>
+  </Tab>
+</Tabs>
+
+<Note>
+  Dashes in table names are replaced with underscores automatically. For example, `my-corpus` becomes `my_corpus`. The same normalization applies during search.
+</Note>
+
+## Python API
+
+<Tabs>
+  <Tab title="DuckDB (sparse)">
+    `DuckDBIndexer` supports both sparse and dense indexes. Use `IndexType.SPARSE` for BM25 full-text retrieval.
+
+    ```python
+    from quackir.index import DuckDBIndexer
+    from quackir import IndexType
+
+    indexer = DuckDBIndexer(db_path="database.db")
+    indexer.init_table("corpus", IndexType.SPARSE)
+    indexer.load_table("corpus", "corpus.jsonl", IndexType.SPARSE)
+    indexer.fts_index("corpus")
+    indexer.close()
+    ```
+
+    `init_table` drops any existing table with that name and creates a fresh `(id VARCHAR, contents VARCHAR)` schema. `load_table` tokenizes each document unless `pretokenized=True` is passed. `fts_index` calls DuckDB's `create_fts_index` pragma with stemming and stopwords disabled, matching the behavior of Pyserini's default analyzer.
+  </Tab>
+  <Tab title="DuckDB (dense)">
+    Use `IndexType.DENSE` to build a vector index. Pass `embedding_dim` to match the dimensionality of your embeddings.
+
+    ```python
+    from quackir.index import DuckDBIndexer
+    from quackir import IndexType
+
+    indexer = DuckDBIndexer(db_path="database.db")
+    indexer.init_table("corpus_dense", IndexType.DENSE, embedding_dim=768)
+    indexer.load_table("corpus_dense", "embeddings.jsonl", IndexType.DENSE)
+    # No fts_index step for dense — cosine similarity is computed at query time
+    indexer.close()
+    ```
+
+    The table schema is `(id VARCHAR, embedding DOUBLE[768])`. Dense search uses cosine similarity via DuckDB's `array_cosine_similarity` function. There is no separate indexing step — similarity is computed over all stored vectors at query time.
+  </Tab>
+  <Tab title="PostgreSQL">
+    `PostgresIndexer` supports sparse (full-text search using `to_tsvector`) and dense (pgvector `vector` type) indexes.
+
+    ```python
+    from quackir.index import PostgresIndexer
+    from quackir import IndexType
+
+    indexer = PostgresIndexer(db_name="quackir", user="postgres")
+
+    # Sparse index
+    indexer.init_table("corpus", IndexType.SPARSE)
+    indexer.load_table("corpus", "corpus.jsonl", IndexType.SPARSE)
+    indexer.fts_index("corpus")
+
+    # Dense index (requires pgvector extension)
+    indexer.init_table("corpus_dense", IndexType.DENSE, embedding_dim=768)
+    indexer.load_table("corpus_dense", "embeddings.jsonl", IndexType.DENSE)
+
+    indexer.close()
+    ```
+
+    <Note>
+      `fts_index` on the sparse table creates a GIN index over `to_tsvector('simple', contents)`. The `pgvector` extension must be installed in the database for dense indexes to work. See [installation](/installation) for setup instructions.
+    </Note>
+  </Tab>
+  <Tab title="SQLite">
+    `SQLiteIndexer` supports sparse indexes only. Dense indexing raises a `ValueError` at runtime.
+
+    ```python
+    from quackir.index import SQLiteIndexer
+    from quackir import IndexType
+
+    indexer = SQLiteIndexer(db_path="database.db")
+    indexer.init_table("corpus", IndexType.SPARSE)
+    indexer.load_table("corpus", "corpus.jsonl", IndexType.SPARSE)
+    indexer.fts_index("corpus")
+    indexer.close()
+    ```
+
+    `fts_index` creates a virtual FTS5 table named `fts_corpus` backed by the `corpus` table.
+
+    <Warning>
+      SQLite only supports sparse indexing. Passing `IndexType.DENSE` or a Parquet file raises an error.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## CLI usage
+
+```bash
+python -m quackir.index \
+  --db-type <duckdb|sqlite|postgres> \
+  --input <path> \
+  --index-type <sparse|dense> \
+  [options]
+```
+
+### Required arguments
+
+<ParamField path="--db-type" type="string" required>
+  Database backend to use. Accepted values: `duckdb`, `sqlite`, `postgres`.
+</ParamField>
+
+<ParamField path="--input" type="string" required>
+  Path to a JSONL or Parquet file, or a directory. When a directory is provided, every file ending in `.jsonl` or `.parquet` is processed; subdirectories and other files are skipped. Progress is printed after each file.
+</ParamField>
+
+<ParamField path="--index-type" type="string" required>
+  Type of index to build. `sparse` creates an `id`/`contents` table and runs `fts_index`. `dense` creates an `id`/`embedding` table.
+</ParamField>
+
+### Database connection arguments
+
+<ParamField path="--db-path" type="string" default="database.db">
+  Path to the database file. Used by DuckDB and SQLite. Ignored for PostgreSQL.
+</ParamField>
+
+<ParamField path="--db-name" type="string" default="quackir">
+  PostgreSQL database name. Ignored for DuckDB and SQLite.
+</ParamField>
+
+<ParamField path="--db-user" type="string" default="postgres">
+  PostgreSQL username. Ignored for DuckDB and SQLite.
+</ParamField>
+
+### Optional arguments
+
+<ParamField path="--index" type="string" default="corpus">
+  Name of the table to create. Any existing table with this name is dropped. Dashes are replaced with underscores.
+</ParamField>
+
+<ParamField path="--pretokenized" type="boolean" default="false">
+  When set, skips tokenization during indexing. Use this when your corpus has already been processed by `quackir.analysis`. Has no effect for dense indexes.
+</ParamField>
+
+<ParamField path="--dimension" type="integer" default="768">
+  Embedding vector dimension. Only applies to dense indexes. Must match the dimensionality of your embeddings.
+</ParamField>
+
+### Examples
+
+```bash
+# Sparse BM25 index with DuckDB
+python -m quackir.index \
+  --db-type duckdb \
+  --db-path database.db \
+  --input corpus.jsonl \
+  --index-type sparse \
+  --index corpus
+
+# Dense vector index with DuckDB (1024-dimensional embeddings)
+python -m quackir.index \
+  --db-type duckdb \
+  --db-path database.db \
+  --input embeddings.parquet \
+  --index-type dense \
+  --index corpus_dense \
+  --dimension 1024
+
+# Sparse index with PostgreSQL using pretokenized input
+python -m quackir.index \
+  --db-type postgres \
+  --db-name quackir \
+  --db-user postgres \
+  --input tokenized_corpus.jsonl \
+  --index-type sparse \
+  --pretokenized
+
+# Sparse index with SQLite
+python -m quackir.index \
+  --db-type sqlite \
+  --db-path sqlite.db \
+  --input corpus.jsonl \
+  --index-type sparse
+```
+
+<Note>
+  After indexing, run `quackir.search` against the same database file and table name. See [searching indexes](/guides/searching) for details.
+</Note>

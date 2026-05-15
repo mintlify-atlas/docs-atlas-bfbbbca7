@@ -1,0 +1,297 @@
+---
+title: "PostgresSearcher API reference"
+description: "Full API reference for PostgresSearcher — run sparse, dense, or hybrid retrieval against PostgreSQL indexes with pgvector support."
+---
+
+`PostgresSearcher` queries full-text (sparse), pgvector (dense), or Reciprocal Rank Fusion (hybrid) indexes stored in a PostgreSQL database. It implements the abstract `Searcher` base class.
+
+```python
+from quackir.search import PostgresSearcher
+```
+
+<Info>
+Dense and hybrid retrieval require the [pgvector](https://github.com/pgvector/pgvector) extension to be installed in your PostgreSQL instance.
+</Info>
+
+## Constructor
+
+```python
+PostgresSearcher(db_name="quackir", user="postgres")
+```
+
+Opens a `psycopg2` connection to the specified PostgreSQL database.
+
+<ParamField path="db_name" type="string" default="quackir">
+  Name of the PostgreSQL database to connect to.
+</ParamField>
+
+<ParamField path="user" type="string" default="postgres">
+  PostgreSQL username.
+</ParamField>
+
+## Methods
+
+### search
+
+```python
+searcher.search(
+    method,
+    query_id=None,
+    query_string=None,
+    query_embedding=None,
+    top_n=5,
+    tokenize_query=True,
+    table_names=["corpus"],
+    rrf_k=60,
+)
+```
+
+Main entry point for retrieval. Dispatches to `fts_search`, `embedding_search`, or `rrf_search` based on `method`, then filters the `query_id` document from results.
+
+<ParamField path="method" type="SearchType" required>
+  `SearchType.SPARSE`, `SearchType.DENSE`, or `SearchType.HYBRID`.
+</ParamField>
+
+<ParamField path="query_id" type="string" default="None">
+  Document ID to exclude from results.
+</ParamField>
+
+<ParamField path="query_string" type="string" default="None">
+  Text query for sparse or hybrid search.
+</ParamField>
+
+<ParamField path="query_embedding" type="number[]" default="None">
+  Query vector for dense or hybrid search.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="tokenize_query" type="boolean" default="true">
+  When `True` and `method` is `SPARSE` or `HYBRID`, the `query_string` is tokenized with Pyserini's Lucene Analyzer before querying.
+</ParamField>
+
+<ParamField path="table_names" type="string[]" default='["corpus"]'>
+  Table(s) to search. For `HYBRID`, provide `[sparse_table, dense_table]`.
+</ParamField>
+
+<ParamField path="rrf_k" type="number" default="60">
+  RRF rank smoothing constant. Only used when `method` is `SearchType.HYBRID`.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(doc_id, score)` tuples ordered by descending score.
+</ResponseField>
+
+---
+
+### fts_search
+
+```python
+searcher.fts_search(query_string, top_n=5, table_name="corpus")
+```
+
+Executes a PostgreSQL full-text search using `to_tsquery('simple', …)` and ranks results with `ts_rank`. The query string is sanitized before use: non-word characters are stripped and remaining terms are joined with `|` (OR).
+
+<ParamField path="query_string" type="string" required>
+  Query string. Cleaned and converted to a `tsquery` expression internally.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the sparse table with a GIN index on `contents`.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, score)` tuples.
+</ResponseField>
+
+---
+
+### embedding_search
+
+```python
+searcher.embedding_search(query_embedding, top_n=5, table_name="corpus")
+```
+
+Computes cosine similarity using pgvector's `<=>` distance operator. The score returned is `1 - cosine_distance`, so higher values indicate greater similarity.
+
+<ParamField path="query_embedding" type="number[]" required>
+  Query vector. Passed directly as the `::vector` cast argument.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField path="table_name" type="string" default="corpus">
+  Name of the dense table with a `vector` column.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, score)` tuples ordered by descending similarity.
+</ResponseField>
+
+---
+
+### rrf_search
+
+```python
+searcher.rrf_search(query_string, query_embedding, top_n=5, k=60, table_names=["sparse", "dense"])
+```
+
+Combines full-text and semantic ranking using Reciprocal Rank Fusion. Each result's RRF score is:
+
+```
+rrf_score = 1 / (k + keyword_rank) + 1 / (k + semantic_rank)
+```
+
+Sparse and dense tables are auto-detected from `table_names` using `get_search_type`.
+
+<ParamField path="query_string" type="string" required>
+  Query string for keyword retrieval. Cleaned to a `tsquery` expression internally.
+</ParamField>
+
+<ParamField path="query_embedding" type="number[]" required>
+  Query vector for semantic retrieval.
+</ParamField>
+
+<ParamField path="top_n" type="number" default="5">
+  Number of candidates fetched from each sub-ranker before fusion.
+</ParamField>
+
+<ParamField path="k" type="number" default="60">
+  RRF rank smoothing constant.
+</ParamField>
+
+<ParamField path="table_names" type="string[]" default='["sparse", "dense"]'>
+  Two table names. The method auto-detects which is sparse and which is dense.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of `(id, rrf_score)` tuples ordered by descending RRF score.
+</ResponseField>
+
+---
+
+### get_search_type
+
+```python
+searcher.get_search_type(table_name)
+```
+
+Queries `information_schema.columns` to detect the table type.
+
+<ParamField path="table_name" type="string" required>
+  Table to inspect.
+</ParamField>
+
+<ResponseField name="return" type="SearchType">
+  `SearchType.SPARSE` if a `contents` column exists; `SearchType.DENSE` if an `embedding` column exists.
+</ResponseField>
+
+Raises `ValueError` if neither column is found.
+
+---
+
+### filter_id
+
+```python
+PostgresSearcher.filter_id(results, query_id)
+```
+
+Static method. Removes the entry whose `id` matches `query_id`. Called automatically by `search()`.
+
+<ParamField path="results" type="list" required>
+  List of `(id, score)` tuples.
+</ParamField>
+
+<ParamField path="query_id" type="string" default="None">
+  Document ID to remove.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  Filtered results list.
+</ResponseField>
+
+---
+
+### close
+
+```python
+searcher.close()
+```
+
+Closes the underlying `psycopg2` connection.
+
+## Examples
+
+### Sparse full-text search
+
+```python
+from quackir import SearchType
+from quackir.search import PostgresSearcher
+
+searcher = PostgresSearcher(db_name="mydb", user="myuser")
+
+results = searcher.search(
+    method=SearchType.SPARSE,
+    query_string="information retrieval benchmarks",
+    top_n=10,
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```
+
+### Dense cosine similarity search
+
+```python
+from quackir import SearchType
+from quackir.search import PostgresSearcher
+
+query_vector = [0.12, -0.34, 0.56]  # replace with a real embedding
+
+searcher = PostgresSearcher(db_name="mydb", user="myuser")
+
+results = searcher.search(
+    method=SearchType.DENSE,
+    query_embedding=query_vector,
+    top_n=10,
+    table_names=["dense_corpus"],
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```
+
+### Hybrid RRF search
+
+```python
+from quackir import SearchType
+from quackir.search import PostgresSearcher
+
+searcher = PostgresSearcher(db_name="mydb", user="myuser")
+
+results = searcher.search(
+    method=SearchType.HYBRID,
+    query_string="neural retrieval",
+    query_embedding=[0.12, -0.34, 0.56],
+    top_n=10,
+    table_names=["sparse_corpus", "dense_corpus"],
+    rrf_k=60,
+)
+
+for doc_id, score in results:
+    print(doc_id, score)
+
+searcher.close()
+```

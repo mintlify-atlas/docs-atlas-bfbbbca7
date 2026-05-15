@@ -1,0 +1,170 @@
+---
+title: "BEIR Benchmark Dense Retrieval with BGE Embeddings"
+description: "Reproduce dense vector retrieval across BEIR v1.0.0 benchmark datasets using pre-encoded BGE-base-en-v1.5 embeddings with DuckDB and PostgreSQL backends."
+---
+
+This guide reproduces BGE-base-en-v1.5 dense retrieval across BEIR v1.0.0 datasets using DuckDB and PostgreSQL as backends. Pre-encoded document embeddings are stored as fixed-size vector arrays and retrieved using exact cosine similarity search.
+
+Dense retrieval encodes both documents and queries into 768-dimensional L2-normalized vectors using the [`BAAI/bge-base-en-v1.5`](https://huggingface.co/BAAI/bge-base-en-v1.5) model. At retrieval time, DuckDB's `array_cosine_similarity` function scores all documents against the query vector. Because vectors are L2-normalized, cosine similarity equals dot product.
+
+<Note>
+  Some datasets from the full BEIR benchmark are not included because the high latency makes them impractical for dense retrieval at this scale. The included corpora are: `nfcorpus`, `scifact`, `arguana`, all `cqadupstack-*` subsets, `scidocs`, `fiqa`, `trec-covid`, `webis-touche2020`, `quora`, `robust04`, and `trec-news`.
+</Note>
+
+## Prerequisites
+
+Make sure QuackIR is installed. See the [installation guide](/installation). For PostgreSQL, ensure the database is initialized and the `vector` extension is enabled (required for dense vector storage).
+
+## Download pre-encoded embeddings
+
+All BEIR corpora pre-encoded with BGE-base-en-v1.5 and stored in Parquet format are available for download:
+
+```bash
+wget https://rgw.cs.uwaterloo.ca/pyserini/data/beir-v1.0.0-bge-base-en-v1.5.parquet.tar -P collections/
+tar xvf collections/beir-v1.0.0-bge-base-en-v1.5.parquet.tar -C collections/
+```
+
+<Warning>
+  The tarball is **127 GB** with MD5 checksum `5f8dce18660cc8ac0318500bea5993ac`. Ensure you have sufficient disk space before downloading.
+</Warning>
+
+Pre-encoded query embeddings are stored in `tools/topics-and-qrels/` as gzipped JSONL files (e.g., `topics.beir-v1.0.0-nfcorpus.test.bge-base-en-v1.5.jsonl.gz`). These are part of the `anserini-tools` submodule — make sure you cloned the repository with `--recurse-submodules`.
+
+<Tip>
+  If you have already completed the [NFCorpus dense retrieval guide](/experiments/nfcorpus), you have seen the encoding workflow with Pyserini. The BEIR experiments use the same approach but with pre-encoded embeddings provided for download rather than requiring you to run encoding yourself.
+</Tip>
+
+## Step-by-step dense retrieval
+
+<Steps>
+  <Step title="Index all corpora">
+    Load the pre-encoded Parquet embeddings into DuckDB and PostgreSQL:
+
+    ```bash
+    CORPORA=(nfcorpus scifact arguana cqadupstack-mathematica cqadupstack-webmasters cqadupstack-android scidocs cqadupstack-programmers cqadupstack-gis cqadupstack-physics cqadupstack-english cqadupstack-stats cqadupstack-gaming cqadupstack-unix cqadupstack-wordpress fiqa cqadupstack-tex trec-covid webis-touche2020 quora robust04 trec-news)
+    for c in "${CORPORA[@]}"
+    do
+        echo $c
+
+        # Index corpus in DuckDB
+        python -m quackir.index \
+        --input ./collections/beir-v1.0.0/bge-base-en-v1.5/$c.parquet/ \
+        --index-type dense \
+        --index $c \
+        --db-type duckdb \
+        --db-path duck.db
+
+        # Index corpus in PostgreSQL
+        python -m quackir.index \
+        --input ./collections/beir-v1.0.0/bge-base-en-v1.5/$c.parquet/ \
+        --index-type dense \
+        --index $c \
+        --db-type postgres
+    done
+    ```
+
+    Alternatively, run the dedicated script:
+
+    ```bash
+    bash ./scripts/beir/index_bge.sh > logs/index_bge.txt
+    ```
+
+    Unlike sparse indexing, there is no tokenization step and no `--pretokenized` flag. The Parquet files already contain only the `id` and `vector` fields that the dense indexer expects.
+  </Step>
+
+  <Step title="Run dense retrieval">
+    Run retrieval for all corpora using pre-encoded query embeddings:
+
+    ```bash
+    CORPORA=(nfcorpus scifact arguana cqadupstack-mathematica cqadupstack-webmasters cqadupstack-android scidocs cqadupstack-programmers cqadupstack-gis cqadupstack-physics cqadupstack-english cqadupstack-stats cqadupstack-gaming cqadupstack-unix cqadupstack-wordpress fiqa cqadupstack-tex trec-covid webis-touche2020 quora robust04 trec-news)
+    for c in "${CORPORA[@]}"
+    do
+        echo $c
+
+        # Retrieval with DuckDB
+        python -m quackir.search \
+        --topics ./tools/topics-and-qrels/topics.beir-v1.0.0-$c.test.bge-base-en-v1.5.jsonl.gz \
+        --index $c \
+        --output runs/duckdb-beir-$c-dense.txt \
+        --db-type duckdb \
+        --db-path duck.db
+
+        # Retrieval with PostgreSQL
+        python -m quackir.search \
+        --topics ./tools/topics-and-qrels/topics.beir-v1.0.0-$c.test.bge-base-en-v1.5.jsonl.gz \
+        --index $c \
+        --output runs/postgres-beir-$c-dense.txt \
+        --db-type postgres
+    done
+    ```
+
+    Alternatively, run the dedicated script:
+
+    ```bash
+    bash ./scripts/beir/search_bge.sh > logs/search_bge.txt
+    ```
+
+    Note that there is no `--pretokenized` flag for dense retrieval — the topic files contain query embeddings (vectors), not tokenized text.
+  </Step>
+
+  <Step title="Evaluate with trec_eval">
+    Evaluate all run files using Pyserini's `trec_eval` wrapper:
+
+    ```bash
+    CORPORA=(nfcorpus scifact arguana cqadupstack-mathematica cqadupstack-webmasters cqadupstack-android scidocs cqadupstack-programmers cqadupstack-gis cqadupstack-physics cqadupstack-english cqadupstack-stats cqadupstack-gaming cqadupstack-unix cqadupstack-wordpress fiqa cqadupstack-tex trec-covid webis-touche2020 quora robust04 trec-news)
+    for c in "${CORPORA[@]}"
+    do
+        echo $c
+
+        echo "duckdb"
+        python -m pyserini.eval.trec_eval -c -m ndcg_cut.10 tools/topics-and-qrels/qrels.beir-v1.0.0-$c.test.txt runs/duckdb-beir-$c-dense.txt
+
+        echo "postgres"
+        python -m pyserini.eval.trec_eval -c -m ndcg_cut.10 tools/topics-and-qrels/qrels.beir-v1.0.0-$c.test.txt runs/postgres-beir-$c-dense.txt
+    done
+    ```
+
+    Alternatively, run the dedicated script:
+
+    ```bash
+    bash ./scripts/beir/eval_bge.sh > logs/eval_bge.txt
+    ```
+  </Step>
+</Steps>
+
+## Results
+
+The following nDCG@10 scores are reproducible with the commands above. A dash (`-`) indicates the corpus was not included in the dense retrieval experiments.
+
+DuckDB and PostgreSQL produce identical scores because both perform exact cosine similarity search over the same pre-encoded vectors.
+
+| Corpus | DuckDB | PostgreSQL |
+|---|---|---|
+| `trec-covid` | 0.7814 | 0.7814 |
+| `nfcorpus` | 0.3735 | 0.3735 |
+| `fiqa` | 0.4065 | 0.4065 |
+| `trec-news` | 0.4425 | 0.4425 |
+| `robust04` | 0.4465 | 0.4465 |
+| `arguana` | 0.6361 | 0.6361 |
+| `webis-touche2020` | 0.2570 | 0.2570 |
+| `cqadupstack-android` | 0.5075 | 0.5075 |
+| `cqadupstack-english` | 0.4857 | 0.4857 |
+| `cqadupstack-gaming` | 0.5965 | 0.5965 |
+| `cqadupstack-gis` | 0.4127 | 0.4127 |
+| `cqadupstack-mathematica` | 0.3163 | 0.3163 |
+| `cqadupstack-physics` | 0.4722 | 0.4722 |
+| `cqadupstack-programmers` | 0.4242 | 0.4242 |
+| `cqadupstack-stats` | 0.3732 | 0.3732 |
+| `cqadupstack-tex` | 0.3115 | 0.3115 |
+| `cqadupstack-unix` | 0.4219 | 0.4219 |
+| `cqadupstack-webmasters` | 0.4065 | 0.4065 |
+| `cqadupstack-wordpress` | 0.3547 | 0.3547 |
+| `quora` | 0.8890 | 0.8890 |
+| `scidocs` | 0.2170 | 0.2170 |
+| `scifact` | 0.7408 | 0.7408 |
+
+Datasets not included (`bioasq`, `nq`, `hotpotqa`, `signal1m`, `dbpedia-entity`, `fever`, `climate-fever`) are marked as `-` in the source documentation.
+
+## Next steps
+
+To combine sparse and dense results using Reciprocal Rank Fusion, see the [hybrid retrieval guide](/experiments/beir-hybrid).
